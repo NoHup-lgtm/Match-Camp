@@ -1,0 +1,359 @@
+{
+  "info": {
+    "name": "Matchcamp Backend MVP",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "run_id", "value": "{{$timestamp}}" },
+    { "key": "alice_email", "value": "alice+{{$timestamp}}@faculdade.local" },
+    { "key": "bruno_email", "value": "bruno+{{$timestamp}}@faculdade.local" },
+    { "key": "password", "value": "senha1234" },
+    { "key": "alice_id", "value": "" },
+    { "key": "bruno_id", "value": "" },
+    { "key": "match_id", "value": "" },
+    { "key": "conversation_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('health ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "00.1 Google OAuth Start - Not Configured",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/auth/google/start"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('google oauth currently not configured', () => pm.response.to.have.status(503));"] }
+        }
+      ]
+    },
+    {
+      "name": "00.2 Google OAuth Callback - Missing State",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/auth/google/callback"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('callback without state is rejected', () => pm.response.to.have.status(400));"] }
+        }
+      ]
+    },
+    {
+      "name": "01 Register Alice",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"display_name\": \"Alice {{run_id}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": "{{base_url}}/v1/auth/register"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('alice registered', () => pm.response.to.have.status(201));",
+              "const json = pm.response.json();",
+              "pm.collectionVariables.set('alice_id', json.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Alice Me",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/me"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice session ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "03 Alice Upsert Profile",
+      "request": {
+        "method": "PUT",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"bio\": \"curto backend\",\n  \"course\": \"Computacao\",\n  \"campus\": \"Principal\",\n  \"birth_date\": \"2000-01-01\"\n}"
+        },
+        "url": "{{base_url}}/v1/profile"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice profile saved', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "04 Alice Visible",
+      "request": {
+        "method": "PATCH",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
+        "url": "{{base_url}}/v1/profile/visibility"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice visible', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "05 Register Bruno",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"display_name\": \"Bruno {{run_id}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": "{{base_url}}/v1/auth/register"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('bruno registered', () => pm.response.to.have.status(201));",
+              "const json = pm.response.json();",
+              "pm.collectionVariables.set('bruno_id', json.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Bruno Upsert Profile",
+      "request": {
+        "method": "PUT",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"bio\": \"curto banco\",\n  \"course\": \"Computacao\",\n  \"campus\": \"Principal\",\n  \"birth_date\": \"2001-01-01\"\n}"
+        },
+        "url": "{{base_url}}/v1/profile"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('bruno profile saved', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "07 Bruno Visible",
+      "request": {
+        "method": "PATCH",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
+        "url": "{{base_url}}/v1/profile/visibility"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('bruno visible', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "08 Login Alice",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": "{{base_url}}/v1/auth/login"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice logged in', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "09 Alice Discovery",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/discovery"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('discovery ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "10 Alice Likes Bruno",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"target_user_id\": \"{{bruno_id}}\",\n  \"action\": \"like\"\n}"
+        },
+        "url": "{{base_url}}/v1/swipes"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('first like does not match yet', () => pm.response.json().matched === false);"] }
+        }
+      ]
+    },
+    {
+      "name": "11 Login Bruno",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": "{{base_url}}/v1/auth/login"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('bruno logged in', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "12 Bruno Likes Alice",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"target_user_id\": \"{{alice_id}}\",\n  \"action\": \"like\"\n}"
+        },
+        "url": "{{base_url}}/v1/swipes"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('reciprocal like creates match', () => pm.response.json().matched === true);",
+              "const json = pm.response.json();",
+              "pm.collectionVariables.set('match_id', json.match_id);",
+              "pm.collectionVariables.set('conversation_id', json.conversation_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 Bruno Conversations",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/conversations"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('conversations ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "14 Bruno Sends Text Message",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"oi, texto puro\"\n}"
+        },
+        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('message created', () => pm.response.to.have.status(201));"] }
+        }
+      ]
+    },
+    {
+      "name": "15 Bruno Lists Messages",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('messages ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "16 Reject Attachment Field",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"foto\",\n  \"image\": \"base64\"\n}"
+        },
+        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('attachment rejected', () => pm.response.to.have.status(400));"] }
+        }
+      ]
+    },
+    {
+      "name": "17 Logout",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/v1/auth/logout"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('logout ok', () => pm.response.to.have.status(204));"] }
+        }
+      ]
+    },
+    {
+      "name": "WebSocket Chat",
+      "request": {
+        "method": "GET",
+        "url": "ws://localhost:8080/v1/ws"
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${HTTP_HOST_PORT:-8080}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: "postgres://matchcamp:matchcamp@postgres:5432/matchcamp?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      SESSION_COOKIE_NAME: "${SESSION_COOKIE_NAME:-matchcamp_session}"
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+      ALLOWED_EMAIL_DOMAINS: "${ALLOWED_EMAIL_DOMAINS:-}"
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URL: "${GOOGLE_REDIRECT_URL:-http://localhost:8080/v1/auth/google/callback}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: matchcamp
+      POSTGRES_PASSWORD: matchcamp
+      POSTGRES_DB: matchcamp
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U matchcamp -d matchcamp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-data:
