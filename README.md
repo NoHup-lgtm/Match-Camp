@@ -9,13 +9,14 @@ Backend/infra MVP para um app de matches da faculdade.
 - Redis: presenca e fanout em tempo real.
 - Docker Compose: ambiente local.
 - goose: migrations.
-- sqlc: configurado para queries tipadas, ainda sem queries geradas no primeiro corte.
+- sqlc: queries SQL gerando codigo Go tipado.
 
 ## Bootstrap
 
 ```sh
 cp .env.example .env
 go mod tidy
+sqlc generate
 go test ./...
 docker compose up --build
 ```
@@ -38,6 +39,9 @@ goose -dir migrations postgres "postgres://matchcamp:matchcamp@localhost:5432/ma
 - `GET /v1/me`
 - `PUT /v1/profile`
 - `PATCH /v1/profile/visibility`
+- `GET /v1/profile/photos`
+- `PUT /v1/profile/photos/{position}`
+- `DELETE /v1/profile/photos/{position}`
 - `GET /v1/discovery`
 - `POST /v1/swipes`
 - `GET /v1/matches`
@@ -49,6 +53,22 @@ goose -dir migrations postgres "postgres://matchcamp:matchcamp@localhost:5432/ma
 ## Chat
 
 Chat e somente texto.
+
+## Fotos De Perfil
+
+Cada usuario pode cadastrar ate 4 fotos de perfil nas posicoes `0..3`.
+
+Upload:
+
+```sh
+curl -X PUT \
+  -b cookies.txt \
+  -F "photo=@/caminho/foto.jpg" \
+  http://localhost:8080/v1/profile/photos/0
+```
+
+Formatos aceitos: JPEG, PNG e WebP. O limite padrao e 5 MiB por foto.
+As fotos ficam no volume Docker `uploads-data` e sao servidas por `/uploads/profile-photos/{arquivo}`.
 
 Payload permitido:
 

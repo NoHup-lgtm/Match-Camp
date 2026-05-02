@@ -13,6 +13,11 @@ services:
       GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
       GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
       GOOGLE_REDIRECT_URL: "${GOOGLE_REDIRECT_URL:-http://localhost:8080/v1/auth/google/callback}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}"
+      UPLOAD_DIR: "/app/uploads"
+      MAX_PROFILE_PHOTO_BYTES: "${MAX_PROFILE_PHOTO_BYTES:-5242880}"
+    volumes:
+      - uploads-data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,3 +52,4 @@ services:
 
 volumes:
   postgres-data:
+  uploads-data:

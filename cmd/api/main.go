@@ -33,15 +33,18 @@ func main() {
 	defer redisClient.Close()
 
 	app := server.New(server.Config{
-		DB:                  db,
-		Redis:               redisClient,
-		Log:                 log,
-		SessionCookieName:   cfg.SessionCookieName,
-		SessionCookieSecure: cfg.SessionCookieSecure,
-		AllowedEmailDomains: cfg.AllowedEmailDomains,
-		GoogleClientID:      cfg.GoogleClientID,
-		GoogleClientSecret:  cfg.GoogleClientSecret,
-		GoogleRedirectURL:   cfg.GoogleRedirectURL,
+		DB:                   db,
+		Redis:                redisClient,
+		Log:                  log,
+		SessionCookieName:    cfg.SessionCookieName,
+		SessionCookieSecure:  cfg.SessionCookieSecure,
+		AllowedEmailDomains:  cfg.AllowedEmailDomains,
+		GoogleClientID:       cfg.GoogleClientID,
+		GoogleClientSecret:   cfg.GoogleClientSecret,
+		GoogleRedirectURL:    cfg.GoogleRedirectURL,
+		PublicBaseURL:        cfg.PublicBaseURL,
+		UploadDir:            cfg.UploadDir,
+		MaxProfilePhotoBytes: cfg.MaxProfilePhotoBytes,
 	})
 
 	srv := &http.Server{

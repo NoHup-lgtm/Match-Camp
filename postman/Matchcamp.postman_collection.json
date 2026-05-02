@@ -125,6 +125,65 @@
       ]
     },
     {
+      "name": "04.1 Alice Upload Profile Photo 0",
+      "request": {
+        "method": "PUT",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "photo",
+              "type": "file",
+              "src": []
+            }
+          ]
+        },
+        "url": "{{base_url}}/v1/profile/photos/0"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice photo uploaded', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "04.2 Alice List Profile Photos",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/v1/profile/photos"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('alice photos listed', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "04.3 Reject Profile Photo Position 4",
+      "request": {
+        "method": "PUT",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "photo",
+              "type": "file",
+              "src": []
+            }
+          ]
+        },
+        "url": "{{base_url}}/v1/profile/photos/4"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('position 4 is rejected', () => pm.response.to.have.status(400));"] }
+        }
+      ]
+    },
+    {
       "name": "05 Register Bruno",
       "request": {
         "method": "POST",

@@ -3,7 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"matchcamp/internal/auth"
+	db "matchcamp/internal/database/db"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,36 +28,45 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
 const sessionTTL = 30 * 24 * time.Hour
 const oauthStateCookieName = "matchcamp_oauth_state"
+const profilePhotoFormField = "photo"
 
 type Config struct {
-	DB                  *pgxpool.Pool
-	Redis               *redis.Client
-	Log                 *slog.Logger
-	SessionCookieName   string
-	SessionCookieSecure bool
-	AllowedEmailDomains []string
-	GoogleClientID      string
-	GoogleClientSecret  string
-	GoogleRedirectURL   string
+	DB                   *pgxpool.Pool
+	Redis                *redis.Client
+	Log                  *slog.Logger
+	SessionCookieName    string
+	SessionCookieSecure  bool
+	AllowedEmailDomains  []string
+	GoogleClientID       string
+	GoogleClientSecret   string
+	GoogleRedirectURL    string
+	PublicBaseURL        string
+	UploadDir            string
+	MaxProfilePhotoBytes int64
 }
 
 type Server struct {
-	db                  *pgxpool.Pool
-	redis               *redis.Client
-	log                 *slog.Logger
-	sessionCookieName   string
-	sessionCookieSecure bool
-	allowedDomains      map[string]struct{}
-	googleClientID      string
-	googleClientSecret  string
-	googleRedirectURL   string
-	upgrader            websocket.Upgrader
+	db                   *pgxpool.Pool
+	queries              *db.Queries
+	redis                *redis.Client
+	log                  *slog.Logger
+	sessionCookieName    string
+	sessionCookieSecure  bool
+	allowedDomains       map[string]struct{}
+	googleClientID       string
+	googleClientSecret   string
+	googleRedirectURL    string
+	publicBaseURL        string
+	uploadDir            string
+	maxProfilePhotoBytes int64
+	upgrader             websocket.Upgrader
 }
 
 type userContextKey struct{}
@@ -71,15 +86,19 @@ func New(cfg Config) *Server {
 		cfg.Log = slog.Default()
 	}
 	return &Server{
-		db:                  cfg.DB,
-		redis:               cfg.Redis,
-		log:                 cfg.Log,
-		sessionCookieName:   cfg.SessionCookieName,
-		sessionCookieSecure: cfg.SessionCookieSecure,
-		allowedDomains:      domains,
-		googleClientID:      cfg.GoogleClientID,
-		googleClientSecret:  cfg.GoogleClientSecret,
-		googleRedirectURL:   cfg.GoogleRedirectURL,
+		db:                   cfg.DB,
+		queries:              db.New(cfg.DB),
+		redis:                cfg.Redis,
+		log:                  cfg.Log,
+		sessionCookieName:    cfg.SessionCookieName,
+		sessionCookieSecure:  cfg.SessionCookieSecure,
+		allowedDomains:       domains,
+		googleClientID:       cfg.GoogleClientID,
+		googleClientSecret:   cfg.GoogleClientSecret,
+		googleRedirectURL:    cfg.GoogleRedirectURL,
+		publicBaseURL:        strings.TrimRight(cfg.PublicBaseURL, "/"),
+		uploadDir:            cfg.UploadDir,
+		maxProfilePhotoBytes: cfg.MaxProfilePhotoBytes,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -94,6 +113,7 @@ func (s *Server) Routes() http.Handler {
 	r.Use(middleware.Logger)
 
 	r.Get("/health", s.health)
+	r.Handle("/uploads/profile-photos/*", http.StripPrefix("/uploads/profile-photos/", http.FileServer(http.Dir(s.profilePhotoDir()))))
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/auth/register", s.register)
@@ -107,6 +127,9 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.me)
 			r.Put("/profile", s.upsertProfile)
 			r.Patch("/profile/visibility", s.updateVisibility)
+			r.Get("/profile/photos", s.listMyProfilePhotos)
+			r.Put("/profile/photos/{position}", s.uploadProfilePhoto)
+			r.Delete("/profile/photos/{position}", s.deleteProfilePhoto)
 			r.Get("/discovery", s.discovery)
 			r.Post("/swipes", s.swipe)
 			r.Get("/matches", s.matches)
@@ -160,12 +183,14 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "password_hash_failed")
 		return
 	}
-	var user currentUser
-	err = s.db.QueryRow(r.Context(), `
-		INSERT INTO users (email, display_name, password_hash)
-		VALUES ($1, $2, $3)
-		RETURNING id, email, display_name
-	`, req.Email, req.DisplayName, hash).Scan(&user.ID, &user.Email, &user.Name)
+	created, err := s.queries.CreatePasswordUser(r.Context(), db.CreatePasswordUserParams{
+		Email:       req.Email,
+		DisplayName: req.DisplayName,
+		PasswordHash: pgtype.Text{
+			String: hash,
+			Valid:  true,
+		},
+	})
 	if isUniqueViolation(err) {
 		writeError(w, http.StatusConflict, "email_already_registered")
 		return
@@ -174,6 +199,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "register_failed")
 		return
 	}
+	user := currentUser{ID: created.ID, Email: created.Email, Name: created.DisplayName}
 	if err := s.createSession(w, r, user.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session_create_failed")
 		return
@@ -192,14 +218,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-	var user currentUser
-	var hash sql.NullString
-	err := s.db.QueryRow(r.Context(), `
-		SELECT id, email, display_name, password_hash
-		FROM users
-		WHERE email = $1
-	`, req.Email).Scan(&user.ID, &user.Email, &user.Name, &hash)
-	if errors.Is(err, pgx.ErrNoRows) || !hash.Valid || !auth.VerifyPassword(hash.String, req.Password) {
+	row, err := s.queries.GetUserForLogin(r.Context(), req.Email)
+	if errors.Is(err, pgx.ErrNoRows) || !row.PasswordHash.Valid || !auth.VerifyPassword(row.PasswordHash.String, req.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
@@ -207,6 +227,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "login_failed")
 		return
 	}
+	user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
 	if err := s.createSession(w, r, user.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session_create_failed")
 		return
@@ -292,7 +313,7 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(s.sessionCookieName)
 	if err == nil {
-		_, _ = s.db.Exec(r.Context(), `DELETE FROM sessions WHERE token_hash = $1`, auth.HashToken(cookie.Value))
+		_ = s.queries.DeleteSessionByTokenHash(r.Context(), auth.HashToken(cookie.Value))
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.sessionCookieName,
@@ -330,25 +351,22 @@ func (s *Server) upsertProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "profile_too_large")
 		return
 	}
-	var birthDate any
+	var birthDate pgtype.Date
 	if strings.TrimSpace(req.BirthDate) != "" {
 		parsed, err := time.Parse("2006-01-02", req.BirthDate)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_birth_date")
 			return
 		}
-		birthDate = parsed
+		birthDate = pgtype.Date{Time: parsed, Valid: true}
 	}
-	_, err := s.db.Exec(r.Context(), `
-		INSERT INTO profiles (user_id, bio, course, campus, birth_date)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (user_id) DO UPDATE SET
-			bio = EXCLUDED.bio,
-			course = EXCLUDED.course,
-			campus = EXCLUDED.campus,
-			birth_date = EXCLUDED.birth_date,
-			updated_at = now()
-	`, user.ID, req.Bio, req.Course, req.Campus, birthDate)
+	err := s.queries.UpsertProfile(r.Context(), db.UpsertProfileParams{
+		UserID:    user.ID,
+		Bio:       req.Bio,
+		Course:    req.Course,
+		Campus:    req.Campus,
+		BirthDate: birthDate,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "profile_save_failed")
 		return
@@ -360,59 +378,165 @@ type visibilityRequest struct {
 	Visible bool `json:"visible"`
 }
 
+type profilePhotoResponsePayload struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	URL       string    `json:"url"`
+	Position  int32     `json:"position"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func (s *Server) updateVisibility(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	var req visibilityRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	cmd, err := s.db.Exec(r.Context(), `
-		UPDATE profiles
-		SET visible = $2, updated_at = now()
-		WHERE user_id = $1
-		  AND char_length(course) > 0
-		  AND char_length(campus) > 0
-	`, user.ID, req.Visible)
+	rowsAffected, err := s.queries.UpdateProfileVisibility(r.Context(), db.UpdateProfileVisibilityParams{
+		UserID:  user.ID,
+		Visible: req.Visible,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "visibility_update_failed")
 		return
 	}
-	if cmd.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		writeError(w, http.StatusBadRequest, "profile_incomplete")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"visible": req.Visible})
 }
 
+func (s *Server) listMyProfilePhotos(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	photos, err := s.queries.ListProfilePhotos(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "profile_photos_list_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, profilePhotoResponses(photos))
+}
+
+func (s *Server) uploadProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	position, ok := parsePhotoPosition(w, r)
+	if !ok {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxProfilePhotoBytes+1024)
+	if err := r.ParseMultipartForm(s.maxProfilePhotoBytes + 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_multipart_photo")
+		return
+	}
+	file, header, err := r.FormFile(profilePhotoFormField)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing_photo_file")
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, s.maxProfilePhotoBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "photo_read_failed")
+		return
+	}
+	if int64(len(data)) > s.maxProfilePhotoBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "profile_photo_too_large")
+		return
+	}
+	contentType := http.DetectContentType(data)
+	ext, ok := profilePhotoExtension(contentType)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported_profile_photo_type")
+		return
+	}
+	if header.Size > s.maxProfilePhotoBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "profile_photo_too_large")
+		return
+	}
+
+	oldPhoto, oldErr := s.queries.GetProfilePhotoByPosition(r.Context(), db.GetProfilePhotoByPositionParams{
+		UserID:   user.ID,
+		Position: int32(position),
+	})
+
+	filename, err := randomProfilePhotoFilename(user.ID, position, ext)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "profile_photo_name_failed")
+		return
+	}
+	if err := os.MkdirAll(s.profilePhotoDir(), 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "profile_photo_dir_failed")
+		return
+	}
+	filePath := filepath.Join(s.profilePhotoDir(), filename)
+	if err := os.WriteFile(filePath, data, 0o644); err != nil {
+		writeError(w, http.StatusInternalServerError, "profile_photo_write_failed")
+		return
+	}
+
+	photoURL := s.publicURL("/uploads/profile-photos/" + filename)
+	photo, err := s.queries.UpsertProfilePhoto(r.Context(), db.UpsertProfilePhotoParams{
+		UserID:   user.ID,
+		Url:      photoURL,
+		Position: int32(position),
+	})
+	if err != nil {
+		_ = os.Remove(filePath)
+		writeError(w, http.StatusInternalServerError, "profile_photo_save_failed")
+		return
+	}
+	if oldErr == nil {
+		s.removeProfilePhotoFile(oldPhoto.Url)
+	}
+	writeJSON(w, http.StatusOK, profilePhotoResponse(photo))
+}
+
+func (s *Server) deleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	position, ok := parsePhotoPosition(w, r)
+	if !ok {
+		return
+	}
+	photo, err := s.queries.DeleteProfilePhotoByPosition(r.Context(), db.DeleteProfilePhotoByPositionParams{
+		UserID:   user.ID,
+		Position: int32(position),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "profile_photo_not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "profile_photo_delete_failed")
+		return
+	}
+	s.removeProfilePhotoFile(photo.Url)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
-	rows, err := s.db.Query(r.Context(), `
-		SELECT u.id, u.display_name, p.bio, p.course, p.campus
-		FROM users u
-		JOIN profiles p ON p.user_id = u.id
-		WHERE p.visible = true
-		  AND u.id <> $1
-		  AND NOT EXISTS (
-			SELECT 1 FROM swipes sw
-			WHERE sw.actor_user_id = $1 AND sw.target_user_id = u.id
-		  )
-		ORDER BY p.updated_at DESC
-		LIMIT 25
-	`, user.ID)
+	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "discovery_failed")
 		return
 	}
-	defer rows.Close()
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id uuid.UUID
-		var name, bio, course, campus string
-		if err := rows.Scan(&id, &name, &bio, &course, &campus); err != nil {
-			writeError(w, http.StatusInternalServerError, "discovery_scan_failed")
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		photos, err := s.queries.ListProfilePhotos(r.Context(), row.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "discovery_photos_failed")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "display_name": name, "bio": bio, "course": course, "campus": campus})
+		items = append(items, map[string]any{
+			"id":           row.ID,
+			"display_name": row.DisplayName,
+			"bio":          row.Bio,
+			"course":       row.Course,
+			"campus":       row.Campus,
+			"photos":       profilePhotoResponses(photos),
+		})
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -450,36 +574,38 @@ func (s *Server) swipe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) matches(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
-	rows, err := s.db.Query(r.Context(), `
-		SELECT m.id, c.id, m.created_at
-		FROM matches m
-		JOIN conversations c ON c.match_id = m.id
-		WHERE m.user_low_id = $1 OR m.user_high_id = $1
-		ORDER BY m.created_at DESC
-	`, user.ID)
+	rows, err := s.queries.ListMatchesForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "matches_failed")
 		return
 	}
-	defer rows.Close()
-	writeRows(w, rows, "match_id", "conversation_id", "created_at")
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"match_id":        row.MatchID,
+			"conversation_id": row.ConversationID,
+			"created_at":      timestamptz(row.CreatedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
-	rows, err := s.db.Query(r.Context(), `
-		SELECT c.id, c.match_id, c.created_at
-		FROM conversations c
-		JOIN conversation_members cm ON cm.conversation_id = c.id
-		WHERE cm.user_id = $1
-		ORDER BY c.created_at DESC
-	`, user.ID)
+	rows, err := s.queries.ListConversationsForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "conversations_failed")
 		return
 	}
-	defer rows.Close()
-	writeRows(w, rows, "conversation_id", "match_id", "created_at")
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"conversation_id": row.ConversationID,
+			"match_id":        row.MatchID,
+			"created_at":      timestamptz(row.CreatedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
@@ -492,19 +618,21 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_conversation_member")
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `
-		SELECT id, sender_user_id, body, created_at
-		FROM messages
-		WHERE conversation_id = $1
-		ORDER BY created_at ASC
-		LIMIT 100
-	`, conversationID)
+	rows, err := s.queries.ListMessages(r.Context(), conversationID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "messages_failed")
 		return
 	}
-	defer rows.Close()
-	writeRows(w, rows, "id", "sender_user_id", "body", "created_at")
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"id":             row.ID,
+			"sender_user_id": row.SenderUserID,
+			"body":           row.Body,
+			"created_at":     timestamptz(row.CreatedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createMessageHTTP(w http.ResponseWriter, r *http.Request) {
@@ -624,13 +752,20 @@ func (s *Server) createMessage(ctx context.Context, sender uuid.UUID, req chatMe
 		return chatMessageResponse{}, errNotConversationMember
 	}
 	var msg chatMessageResponse
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO messages (conversation_id, sender_user_id, body)
-		VALUES ($1, $2, $3)
-		RETURNING id, conversation_id, sender_user_id, body, created_at
-	`, req.ConversationID, sender, strings.TrimSpace(req.Text)).Scan(&msg.ID, &msg.ConversationID, &msg.SenderUserID, &msg.Text, &msg.CreatedAt)
+	row, err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: req.ConversationID,
+		SenderUserID:   sender,
+		Body:           strings.TrimSpace(req.Text),
+	})
 	if err != nil {
 		return chatMessageResponse{}, err
+	}
+	msg = chatMessageResponse{
+		ID:             row.ID,
+		ConversationID: row.ConversationID,
+		SenderUserID:   row.SenderUserID,
+		Text:           row.Body,
+		CreatedAt:      timestamptz(row.CreatedAt),
 	}
 	payload, _ := json.Marshal(msg)
 	recipients, err := s.conversationMembers(ctx, req.ConversationID)
@@ -660,11 +795,13 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 		return uuid.Nil, uuid.Nil, false, err
 	}
 	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO swipes (actor_user_id, target_user_id, action)
-		VALUES ($1, $2, $3)
-	`, actor, target, action)
+	err = qtx.CreateSwipe(ctx, db.CreateSwipeParams{
+		ActorUserID:  actor,
+		TargetUserID: target,
+		Action:       action,
+	})
 	if err != nil || action != "like" {
 		if err != nil {
 			return uuid.Nil, uuid.Nil, false, err
@@ -675,12 +812,10 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 		return uuid.Nil, uuid.Nil, false, nil
 	}
 	var reciprocal bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM swipes
-			WHERE actor_user_id = $1 AND target_user_id = $2 AND action = 'like'
-		)
-	`, target, actor).Scan(&reciprocal)
+	reciprocal, err = qtx.HasReciprocalLike(ctx, db.HasReciprocalLikeParams{
+		ActorUserID:  target,
+		TargetUserID: actor,
+	})
 	if err != nil || !reciprocal {
 		if err != nil {
 			return uuid.Nil, uuid.Nil, false, err
@@ -693,31 +828,23 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 
 	low, high := normalizePair(actor, target)
 	var matchID uuid.UUID
-	err = tx.QueryRow(ctx, `
-		INSERT INTO matches (user_low_id, user_high_id)
-		VALUES ($1, $2)
-		ON CONFLICT (user_low_id, user_high_id) DO UPDATE SET user_low_id = EXCLUDED.user_low_id
-		RETURNING id
-	`, low, high).Scan(&matchID)
+	matchID, err = qtx.UpsertMatch(ctx, db.UpsertMatchParams{
+		UserLowID:  low,
+		UserHighID: high,
+	})
 	if err != nil {
 		return uuid.Nil, uuid.Nil, false, err
 	}
 	var conversationID uuid.UUID
-	err = tx.QueryRow(ctx, `
-		INSERT INTO conversations (match_id)
-		VALUES ($1)
-		ON CONFLICT (match_id) DO UPDATE SET match_id = EXCLUDED.match_id
-		RETURNING id
-	`, matchID).Scan(&conversationID)
+	conversationID, err = qtx.UpsertConversationForMatch(ctx, matchID)
 	if err != nil {
 		return uuid.Nil, uuid.Nil, false, err
 	}
 	for _, member := range []uuid.UUID{actor, target} {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO conversation_members (conversation_id, user_id)
-			VALUES ($1, $2)
-			ON CONFLICT DO NOTHING
-		`, conversationID, member); err != nil {
+		if err := qtx.AddConversationMember(ctx, db.AddConversationMemberParams{
+			ConversationID: conversationID,
+			UserID:         member,
+		}); err != nil {
 			return uuid.Nil, uuid.Nil, false, err
 		}
 	}
@@ -734,13 +861,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing_session")
 			return
 		}
-		var user currentUser
-		err = s.db.QueryRow(r.Context(), `
-			SELECT u.id, u.email, u.display_name
-			FROM sessions s
-			JOIN users u ON u.id = s.user_id
-			WHERE s.token_hash = $1 AND s.expires_at > now()
-		`, auth.HashToken(cookie.Value)).Scan(&user.ID, &user.Email, &user.Name)
+		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(cookie.Value))
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusUnauthorized, "invalid_session")
 			return
@@ -749,6 +870,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "session_lookup_failed")
 			return
 		}
+		user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
 	})
 }
@@ -759,10 +881,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uu
 		return err
 	}
 	expiresAt := time.Now().Add(sessionTTL)
-	if _, err := s.db.Exec(r.Context(), `
-		INSERT INTO sessions (user_id, token_hash, expires_at)
-		VALUES ($1, $2, $3)
-	`, userID, hash, expiresAt); err != nil {
+	if err := s.queries.CreateSession(r.Context(), db.CreateSessionParams{
+		UserID:    userID,
+		TokenHash: hash,
+		ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
+	}); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -858,13 +981,11 @@ func (s *Server) upsertGoogleUser(ctx context.Context, profile googleProfile) (c
 	defer tx.Rollback(ctx)
 
 	var user currentUser
-	err = tx.QueryRow(ctx, `
-		SELECT u.id, u.email, u.display_name
-		FROM auth_identities ai
-		JOIN users u ON u.id = ai.user_id
-		WHERE ai.provider = 'google' AND ai.provider_subject = $1
-	`, profile.Subject).Scan(&user.ID, &user.Email, &user.Name)
+	qtx := s.queries.WithTx(tx)
+
+	row, err := qtx.GetGoogleUserBySubject(ctx, profile.Subject)
 	if err == nil {
+		user = currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
 		return user, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -875,21 +996,19 @@ func (s *Server) upsertGoogleUser(ctx context.Context, profile googleProfile) (c
 	if displayName == "" {
 		displayName = strings.Split(profile.Email, "@")[0]
 	}
-	err = tx.QueryRow(ctx, `
-		INSERT INTO users (email, display_name)
-		VALUES ($1, $2)
-		ON CONFLICT (email) DO UPDATE SET
-			display_name = users.display_name
-		RETURNING id, email, display_name
-	`, profile.Email, displayName).Scan(&user.ID, &user.Email, &user.Name)
+	created, err := qtx.UpsertGoogleUserByEmail(ctx, db.UpsertGoogleUserByEmailParams{
+		Email:       profile.Email,
+		DisplayName: displayName,
+	})
 	if err != nil {
 		return currentUser{}, err
 	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO auth_identities (user_id, provider, provider_subject, email)
-		VALUES ($1, 'google', $2, $3)
-		ON CONFLICT (provider, provider_subject) DO NOTHING
-	`, user.ID, profile.Subject, profile.Email)
+	user = currentUser{ID: created.ID, Email: created.Email, Name: created.DisplayName}
+	err = qtx.LinkGoogleIdentity(ctx, db.LinkGoogleIdentityParams{
+		UserID:          user.ID,
+		ProviderSubject: profile.Subject,
+		Email:           profile.Email,
+	})
 	if err != nil {
 		return currentUser{}, err
 	}
@@ -909,31 +1028,41 @@ func (s *Server) emailAllowed(email string) bool {
 }
 
 func (s *Server) isConversationMember(ctx context.Context, conversationID, userID uuid.UUID) bool {
-	var exists bool
-	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM conversation_members
-			WHERE conversation_id = $1 AND user_id = $2
-		)
-	`, conversationID, userID).Scan(&exists)
+	exists, err := s.queries.IsConversationMember(ctx, db.IsConversationMemberParams{
+		ConversationID: conversationID,
+		UserID:         userID,
+	})
 	return err == nil && exists
 }
 
 func (s *Server) conversationMembers(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.db.Query(ctx, `SELECT user_id FROM conversation_members WHERE conversation_id = $1`, conversationID)
+	return s.queries.ListConversationMembers(ctx, conversationID)
+}
+
+func (s *Server) profilePhotoDir() string {
+	return filepath.Join(s.uploadDir, "profile-photos")
+}
+
+func (s *Server) publicURL(assetPath string) string {
+	if s.publicBaseURL == "" {
+		return assetPath
+	}
+	return s.publicBaseURL + assetPath
+}
+
+func (s *Server) removeProfilePhotoFile(photoURL string) {
+	parsed, err := url.Parse(photoURL)
 	if err != nil {
-		return nil, err
+		return
 	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
+	if path.Dir(parsed.Path) != "/uploads/profile-photos" {
+		return
 	}
-	return ids, rows.Err()
+	filename := path.Base(parsed.Path)
+	if filename == "." || filename == "/" || filename == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(s.profilePhotoDir(), filename))
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -1003,30 +1132,59 @@ func writeChatError(w http.ResponseWriter, err error) {
 	}
 }
 
-func writeRows(w http.ResponseWriter, rows pgx.Rows, names ...string) {
-	out := make([]map[string]any, 0)
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "row_scan_failed")
-			return
-		}
-		item := make(map[string]any, len(names))
-		for i, name := range names {
-			item[name] = normalizeJSONValue(values[i])
-		}
-		out = append(out, item)
+func profilePhotoResponses(photos []db.ProfilePhoto) []profilePhotoResponsePayload {
+	out := make([]profilePhotoResponsePayload, 0, len(photos))
+	for _, photo := range photos {
+		out = append(out, profilePhotoResponse(photo))
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
-func normalizeJSONValue(value any) any {
-	switch typed := value.(type) {
-	case [16]byte:
-		return uuid.UUID(typed).String()
-	default:
-		return value
+func profilePhotoResponse(photo db.ProfilePhoto) profilePhotoResponsePayload {
+	return profilePhotoResponsePayload{
+		ID:        photo.ID,
+		UserID:    photo.UserID,
+		URL:       photo.Url,
+		Position:  photo.Position,
+		CreatedAt: timestamptz(photo.CreatedAt),
 	}
+}
+
+func timestamptz(value pgtype.Timestamptz) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+	return value.Time
+}
+
+func parsePhotoPosition(w http.ResponseWriter, r *http.Request) (int, bool) {
+	position, err := strconv.Atoi(chi.URLParam(r, "position"))
+	if err != nil || position < 0 || position > 3 {
+		writeError(w, http.StatusBadRequest, "invalid_profile_photo_position")
+		return 0, false
+	}
+	return position, true
+}
+
+func profilePhotoExtension(contentType string) (string, bool) {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/png":
+		return ".png", true
+	case "image/webp":
+		return ".webp", true
+	default:
+		return "", false
+	}
+}
+
+func randomProfilePhotoFilename(userID uuid.UUID, position int, ext string) (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%d-%s%s", userID.String(), position, hex.EncodeToString(buf), ext), nil
 }
 
 func parseRouteUUID(w http.ResponseWriter, r *http.Request, key string) (uuid.UUID, bool) {
