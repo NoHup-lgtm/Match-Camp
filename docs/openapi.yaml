@@ -1,0 +1,550 @@
+openapi: 3.0.3
+info:
+  title: Matchcamp API
+  version: 0.2.0
+  description: API REST e WebSocket do Matchcamp.
+servers:
+  - url: http://localhost:8080
+security:
+  - cookieAuth: []
+tags:
+  - name: Health
+  - name: Auth
+  - name: Profile
+  - name: Discovery
+  - name: Match
+  - name: Chat
+paths:
+  /health:
+    get:
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: Servicos saudaveis.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Usuario cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login realizado. Define cookie HttpOnly de sessao.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/auth/google/start:
+    get:
+      tags: [Auth]
+      security: []
+      responses:
+        "302":
+          description: Redireciona para Google OAuth.
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/auth/google/callback:
+    get:
+      tags: [Auth]
+      security: []
+      parameters:
+        - in: query
+          name: code
+          schema:
+            type: string
+        - in: query
+          name: state
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Usuario autenticado pelo Google.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      responses:
+        "204":
+          description: Sessao encerrada.
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/me:
+    get:
+      tags: [Auth]
+      responses:
+        "200":
+          description: Usuario autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/profile:
+    put:
+      tags: [Profile]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProfileRequest"
+      responses:
+        "200":
+          description: Perfil salvo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: saved
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/profile/visibility:
+    patch:
+      tags: [Profile]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visible]
+              properties:
+                visible:
+                  type: boolean
+      responses:
+        "200":
+          description: Visibilidade atualizada.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  visible:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/profile/photos:
+    get:
+      tags: [Profile]
+      responses:
+        "200":
+          description: Fotos do perfil autenticado.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProfilePhoto"
+  /v1/profile/photos/{position}:
+    put:
+      tags: [Profile]
+      parameters:
+        - $ref: "#/components/parameters/ProfilePhotoPosition"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Foto salva ou substituida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfilePhoto"
+        "400":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Profile]
+      parameters:
+        - $ref: "#/components/parameters/ProfilePhotoPosition"
+      responses:
+        "204":
+          description: Foto removida.
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/discovery:
+    get:
+      tags: [Discovery]
+      responses:
+        "200":
+          description: Perfis visiveis ainda nao avaliados.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DiscoveryProfile"
+  /v1/swipes:
+    post:
+      tags: [Match]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwipeRequest"
+      responses:
+        "201":
+          description: Swipe registrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwipeResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/matches:
+    get:
+      tags: [Match]
+      responses:
+        "200":
+          description: Matches do usuario.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Match"
+  /v1/conversations:
+    get:
+      tags: [Chat]
+      responses:
+        "200":
+          description: Conversas do usuario.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Conversation"
+  /v1/conversations/{id}/messages:
+    get:
+      tags: [Chat]
+      parameters:
+        - $ref: "#/components/parameters/UUIDPathID"
+      responses:
+        "200":
+          description: Mensagens da conversa.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Chat]
+      parameters:
+        - $ref: "#/components/parameters/UUIDPathID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "201":
+          description: Mensagem criada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageCreated"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/ws:
+    get:
+      tags: [Chat]
+      summary: WebSocket autenticado para chat em tempo real.
+      description: "Upgrade WebSocket. Envie JSON com conversation_id e text. Campos extras, links e midia sao rejeitados."
+      responses:
+        "101":
+          description: Conexao WebSocket estabelecida.
+        "401":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: matchcamp_session
+  parameters:
+    UUIDPathID:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProfilePhotoPosition:
+      in: path
+      name: position
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 3
+  responses:
+    Error:
+      description: Erro padronizado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: invalid_credentials
+            message:
+              type: string
+              example: Email ou senha invalidos.
+            request_id:
+              type: string
+              example: 4bdfb6c2d46d/BtJz9SRWbG-000001
+    User:
+      type: object
+      required: [id, email, display_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+    RegisterRequest:
+      type: object
+      required: [email, display_name, password]
+      properties:
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        password:
+          type: string
+          minLength: 8
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    ProfileRequest:
+      type: object
+      properties:
+        bio:
+          type: string
+          maxLength: 500
+        course:
+          type: string
+          maxLength: 120
+        campus:
+          type: string
+          maxLength: 120
+        birth_date:
+          type: string
+          format: date
+    ProfilePhoto:
+      type: object
+      required: [id, user_id, url, position, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        position:
+          type: integer
+          minimum: 0
+          maximum: 3
+        created_at:
+          type: string
+          format: date-time
+    DiscoveryProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        bio:
+          type: string
+        course:
+          type: string
+        campus:
+          type: string
+        photos:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfilePhoto"
+    SwipeRequest:
+      type: object
+      required: [target_user_id, action]
+      properties:
+        target_user_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [like, pass]
+    SwipeResponse:
+      type: object
+      properties:
+        matched:
+          type: boolean
+        match_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+    Match:
+      type: object
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    Conversation:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        match_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    CreateMessageRequest:
+      type: object
+      required: [conversation_id, text]
+      additionalProperties: false
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sender_user_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    MessageCreated:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_user_id:
+          type: string
+          format: uuid
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time

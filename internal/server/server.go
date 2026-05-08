@@ -3,8 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,15 +10,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"matchcamp/internal/apperror"
 	"matchcamp/internal/auth"
 	db "matchcamp/internal/database/db"
+	"matchcamp/internal/storage"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -40,6 +37,7 @@ const profilePhotoFormField = "photo"
 type Config struct {
 	DB                   *pgxpool.Pool
 	Redis                *redis.Client
+	Storage              storage.ObjectStore
 	Log                  *slog.Logger
 	SessionCookieName    string
 	SessionCookieSecure  bool
@@ -56,6 +54,7 @@ type Server struct {
 	db                   *pgxpool.Pool
 	queries              *db.Queries
 	redis                *redis.Client
+	storage              storage.ObjectStore
 	log                  *slog.Logger
 	sessionCookieName    string
 	sessionCookieSecure  bool
@@ -89,6 +88,7 @@ func New(cfg Config) *Server {
 		db:                   cfg.DB,
 		queries:              db.New(cfg.DB),
 		redis:                cfg.Redis,
+		storage:              cfg.Storage,
 		log:                  cfg.Log,
 		sessionCookieName:    cfg.SessionCookieName,
 		sessionCookieSecure:  cfg.SessionCookieSecure,
@@ -113,7 +113,10 @@ func (s *Server) Routes() http.Handler {
 	r.Use(middleware.Logger)
 
 	r.Get("/health", s.health)
-	r.Handle("/uploads/profile-photos/*", http.StripPrefix("/uploads/profile-photos/", http.FileServer(http.Dir(s.profilePhotoDir()))))
+	r.Get("/openapi.yaml", s.openapi)
+	r.Get("/docs", s.docs)
+	r.Get("/docs/", s.docs)
+	r.Handle("/uploads/*", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.uploadDir))))
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/auth/register", s.register)
@@ -147,14 +150,39 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.db.Ping(ctx); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "database_unavailable")
+		writeError(w, r, "database_unavailable")
 		return
 	}
 	if err := s.redis.Ping(ctx).Err(); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "redis_unavailable")
+		writeError(w, r, "redis_unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "docs/openapi.yaml")
+}
+
+func (s *Server) docs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Matchcamp API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({ url: "/openapi.yaml", dom_id: "#swagger-ui" });
+  </script>
+</body>
+</html>`))
 }
 
 type registerRequest struct {
@@ -171,16 +199,16 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	if req.Email == "" || req.DisplayName == "" || len(req.Password) < auth.PasswordMinLen {
-		writeError(w, http.StatusBadRequest, "invalid_register_payload")
+		writeError(w, r, "invalid_register_payload")
 		return
 	}
 	if !s.emailAllowed(req.Email) {
-		writeError(w, http.StatusForbidden, "email_domain_not_allowed")
+		writeError(w, r, "email_domain_not_allowed")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "password_hash_failed")
+		writeError(w, r, "password_hash_failed")
 		return
 	}
 	created, err := s.queries.CreatePasswordUser(r.Context(), db.CreatePasswordUserParams{
@@ -192,16 +220,16 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if isUniqueViolation(err) {
-		writeError(w, http.StatusConflict, "email_already_registered")
+		writeError(w, r, "email_already_registered")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "register_failed")
+		writeError(w, r, "register_failed")
 		return
 	}
 	user := currentUser{ID: created.ID, Email: created.Email, Name: created.DisplayName}
 	if err := s.createSession(w, r, user.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "session_create_failed")
+		writeError(w, r, "session_create_failed")
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
@@ -220,16 +248,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	row, err := s.queries.GetUserForLogin(r.Context(), req.Email)
 	if errors.Is(err, pgx.ErrNoRows) || !row.PasswordHash.Valid || !auth.VerifyPassword(row.PasswordHash.String, req.Password) {
-		writeError(w, http.StatusUnauthorized, "invalid_credentials")
+		writeError(w, r, "invalid_credentials")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "login_failed")
+		writeError(w, r, "login_failed")
 		return
 	}
 	user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
 	if err := s.createSession(w, r, user.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "session_create_failed")
+		writeError(w, r, "session_create_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -237,12 +265,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
 	if s.googleClientID == "" || s.googleRedirectURL == "" {
-		writeError(w, http.StatusServiceUnavailable, "google_oauth_not_configured")
+		writeError(w, r, "google_oauth_not_configured")
 		return
 	}
 	state, _, err := auth.NewSessionToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "oauth_state_failed")
+		writeError(w, r, "oauth_state_failed")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -267,35 +295,35 @@ func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie(oauthStateCookieName)
 	if err != nil || stateCookie.Value == "" || stateCookie.Value != r.URL.Query().Get("state") {
-		writeError(w, http.StatusBadRequest, "invalid_oauth_state")
+		writeError(w, r, "invalid_oauth_state")
 		return
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		writeError(w, http.StatusBadRequest, "missing_oauth_code")
+		writeError(w, r, "missing_oauth_code")
 		return
 	}
 	profile, err := s.fetchGoogleProfile(r.Context(), code)
 	if err != nil {
 		s.log.Warn("google oauth failed", "error", err)
-		writeError(w, http.StatusUnauthorized, "google_oauth_failed")
+		writeError(w, r, "google_oauth_failed")
 		return
 	}
 	if !profile.EmailVerified {
-		writeError(w, http.StatusForbidden, "google_email_not_verified")
+		writeError(w, r, "google_email_not_verified")
 		return
 	}
 	if !s.emailAllowed(profile.Email) {
-		writeError(w, http.StatusForbidden, "email_domain_not_allowed")
+		writeError(w, r, "email_domain_not_allowed")
 		return
 	}
 	user, err := s.upsertGoogleUser(r.Context(), profile)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "google_user_save_failed")
+		writeError(w, r, "google_user_save_failed")
 		return
 	}
 	if err := s.createSession(w, r, user.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "session_create_failed")
+		writeError(w, r, "session_create_failed")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -348,14 +376,14 @@ func (s *Server) upsertProfile(w http.ResponseWriter, r *http.Request) {
 	req.Course = strings.TrimSpace(req.Course)
 	req.Campus = strings.TrimSpace(req.Campus)
 	if len(req.Bio) > 500 || len(req.Course) > 120 || len(req.Campus) > 120 {
-		writeError(w, http.StatusBadRequest, "profile_too_large")
+		writeError(w, r, "profile_too_large")
 		return
 	}
 	var birthDate pgtype.Date
 	if strings.TrimSpace(req.BirthDate) != "" {
 		parsed, err := time.Parse("2006-01-02", req.BirthDate)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_birth_date")
+			writeError(w, r, "invalid_birth_date")
 			return
 		}
 		birthDate = pgtype.Date{Time: parsed, Valid: true}
@@ -368,7 +396,7 @@ func (s *Server) upsertProfile(w http.ResponseWriter, r *http.Request) {
 		BirthDate: birthDate,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_save_failed")
+		writeError(w, r, "profile_save_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
@@ -397,11 +425,11 @@ func (s *Server) updateVisibility(w http.ResponseWriter, r *http.Request) {
 		Visible: req.Visible,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "visibility_update_failed")
+		writeError(w, r, "visibility_update_failed")
 		return
 	}
 	if rowsAffected == 0 {
-		writeError(w, http.StatusBadRequest, "profile_incomplete")
+		writeError(w, r, "profile_incomplete")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"visible": req.Visible})
@@ -411,7 +439,7 @@ func (s *Server) listMyProfilePhotos(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	photos, err := s.queries.ListProfilePhotos(r.Context(), user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_photos_list_failed")
+		writeError(w, r, "profile_photos_list_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, profilePhotoResponses(photos))
@@ -426,33 +454,32 @@ func (s *Server) uploadProfilePhoto(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxProfilePhotoBytes+1024)
 	if err := r.ParseMultipartForm(s.maxProfilePhotoBytes + 1024); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_multipart_photo")
+		writeError(w, r, "invalid_multipart_photo")
 		return
 	}
 	file, header, err := r.FormFile(profilePhotoFormField)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing_photo_file")
+		writeError(w, r, "missing_photo_file")
 		return
 	}
 	defer file.Close()
 
 	data, err := io.ReadAll(io.LimitReader(file, s.maxProfilePhotoBytes+1))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "photo_read_failed")
+		writeError(w, r, "photo_read_failed")
 		return
 	}
 	if int64(len(data)) > s.maxProfilePhotoBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "profile_photo_too_large")
+		writeError(w, r, "profile_photo_too_large")
 		return
 	}
-	contentType := http.DetectContentType(data)
-	ext, ok := profilePhotoExtension(contentType)
+	contentType, ext, ok := storage.DetectImageExtension(data)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "unsupported_profile_photo_type")
+		writeError(w, r, "unsupported_profile_photo_type")
 		return
 	}
 	if header.Size > s.maxProfilePhotoBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "profile_photo_too_large")
+		writeError(w, r, "profile_photo_too_large")
 		return
 	}
 
@@ -461,34 +488,30 @@ func (s *Server) uploadProfilePhoto(w http.ResponseWriter, r *http.Request) {
 		Position: int32(position),
 	})
 
-	filename, err := randomProfilePhotoFilename(user.ID, position, ext)
+	key, err := storage.ProfilePhotoKey(user.ID, position, ext)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_photo_name_failed")
+		writeError(w, r, "profile_photo_name_failed")
 		return
 	}
-	if err := os.MkdirAll(s.profilePhotoDir(), 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_photo_dir_failed")
-		return
-	}
-	filePath := filepath.Join(s.profilePhotoDir(), filename)
-	if err := os.WriteFile(filePath, data, 0o644); err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_photo_write_failed")
+	photoURL, err := s.storage.Put(r.Context(), key, contentType, data)
+	if err != nil {
+		s.log.Warn("profile photo upload failed", "error", err)
+		writeError(w, r, "profile_photo_upload_failed")
 		return
 	}
 
-	photoURL := s.publicURL("/uploads/profile-photos/" + filename)
 	photo, err := s.queries.UpsertProfilePhoto(r.Context(), db.UpsertProfilePhotoParams{
 		UserID:   user.ID,
 		Url:      photoURL,
 		Position: int32(position),
 	})
 	if err != nil {
-		_ = os.Remove(filePath)
-		writeError(w, http.StatusInternalServerError, "profile_photo_save_failed")
+		_ = s.storage.Delete(r.Context(), key)
+		writeError(w, r, "profile_photo_save_failed")
 		return
 	}
 	if oldErr == nil {
-		s.removeProfilePhotoFile(oldPhoto.Url)
+		s.removeProfilePhotoObject(r.Context(), oldPhoto.Url)
 	}
 	writeJSON(w, http.StatusOK, profilePhotoResponse(photo))
 }
@@ -504,14 +527,14 @@ func (s *Server) deleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
 		Position: int32(position),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "profile_photo_not_found")
+		writeError(w, r, "profile_photo_not_found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile_photo_delete_failed")
+		writeError(w, r, "profile_photo_delete_failed")
 		return
 	}
-	s.removeProfilePhotoFile(photo.Url)
+	s.removeProfilePhotoObject(r.Context(), photo.Url)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -519,14 +542,14 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "discovery_failed")
+		writeError(w, r, "discovery_failed")
 		return
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		photos, err := s.queries.ListProfilePhotos(r.Context(), row.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "discovery_photos_failed")
+			writeError(w, r, "discovery_photos_failed")
 			return
 		}
 		items = append(items, map[string]any{
@@ -553,16 +576,16 @@ func (s *Server) swipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.TargetUserID == uuid.Nil || req.TargetUserID == user.ID || (req.Action != "like" && req.Action != "pass") {
-		writeError(w, http.StatusBadRequest, "invalid_swipe")
+		writeError(w, r, "invalid_swipe")
 		return
 	}
 	matchID, conversationID, matched, err := s.recordSwipe(r.Context(), user.ID, req.TargetUserID, req.Action)
 	if isUniqueViolation(err) {
-		writeError(w, http.StatusConflict, "swipe_already_exists")
+		writeError(w, r, "swipe_already_exists")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "swipe_failed")
+		writeError(w, r, "swipe_failed")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -576,7 +599,7 @@ func (s *Server) matches(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	rows, err := s.queries.ListMatchesForUser(r.Context(), user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "matches_failed")
+		writeError(w, r, "matches_failed")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -594,7 +617,7 @@ func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	rows, err := s.queries.ListConversationsForUser(r.Context(), user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "conversations_failed")
+		writeError(w, r, "conversations_failed")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -615,12 +638,12 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.isConversationMember(r.Context(), conversationID, user.ID) {
-		writeError(w, http.StatusForbidden, "not_conversation_member")
+		writeError(w, r, "not_conversation_member")
 		return
 	}
 	rows, err := s.queries.ListMessages(r.Context(), conversationID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "messages_failed")
+		writeError(w, r, "messages_failed")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -646,13 +669,13 @@ func (s *Server) createMessageHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConversationID != conversationID {
-		writeError(w, http.StatusBadRequest, "conversation_id_mismatch")
+		writeError(w, r, "conversation_id_mismatch")
 		return
 	}
 	req.ConversationID = conversationID
 	msg, err := s.createMessage(r.Context(), user.ID, req)
 	if err != nil {
-		writeChatError(w, err)
+		writeChatError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, msg)
@@ -858,16 +881,16 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(s.sessionCookieName)
 		if err != nil || cookie.Value == "" {
-			writeError(w, http.StatusUnauthorized, "missing_session")
+			writeError(w, r, "missing_session")
 			return
 		}
 		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(cookie.Value))
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusUnauthorized, "invalid_session")
+			writeError(w, r, "invalid_session")
 			return
 		}
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "session_lookup_failed")
+			writeError(w, r, "session_lookup_failed")
 			return
 		}
 		user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
@@ -1039,37 +1062,19 @@ func (s *Server) conversationMembers(ctx context.Context, conversationID uuid.UU
 	return s.queries.ListConversationMembers(ctx, conversationID)
 }
 
-func (s *Server) profilePhotoDir() string {
-	return filepath.Join(s.uploadDir, "profile-photos")
-}
-
-func (s *Server) publicURL(assetPath string) string {
-	if s.publicBaseURL == "" {
-		return assetPath
-	}
-	return s.publicBaseURL + assetPath
-}
-
-func (s *Server) removeProfilePhotoFile(photoURL string) {
-	parsed, err := url.Parse(photoURL)
-	if err != nil {
+func (s *Server) removeProfilePhotoObject(ctx context.Context, photoURL string) {
+	key, ok := s.storage.KeyFromURL(photoURL)
+	if !ok {
 		return
 	}
-	if path.Dir(parsed.Path) != "/uploads/profile-photos" {
-		return
-	}
-	filename := path.Base(parsed.Path)
-	if filename == "." || filename == "/" || filename == "" {
-		return
-	}
-	_ = os.Remove(filepath.Join(s.profilePhotoDir(), filename))
+	_ = s.storage.Delete(ctx, key)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json")
+		writeError(w, r, "invalid_json")
 		return false
 	}
 	return true
@@ -1079,16 +1084,16 @@ func decodeChatPayload(w http.ResponseWriter, r *http.Request) (chatMessageReque
 	defer r.Body.Close()
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(http.MaxBytesReader(w, r.Body, 1<<20)); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_chat_payload")
+		writeError(w, r, "invalid_chat_payload")
 		return chatMessageRequest{}, false
 	}
 	req, err := parseChatPayloadBytes(buf.Bytes())
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, r, err.Error())
 		return chatMessageRequest{}, false
 	}
 	if err := validateChatPayload(req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, r, err.Error())
 		return chatMessageRequest{}, false
 	}
 	return req, true
@@ -1117,18 +1122,25 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeError(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, map[string]string{"error": code})
+func writeError(w http.ResponseWriter, r *http.Request, code string) {
+	def := apperror.Lookup(code)
+	writeJSON(w, def.Status, apperror.Response{
+		Error: apperror.ErrorBody{
+			Code:      def.Code,
+			Message:   def.Message,
+			RequestID: middleware.GetReqID(r.Context()),
+		},
+	})
 }
 
-func writeChatError(w http.ResponseWriter, err error) {
+func writeChatError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errInvalidChatPayload):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, r, err.Error())
 	case errors.Is(err, errNotConversationMember):
-		writeError(w, http.StatusForbidden, err.Error())
+		writeError(w, r, err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, "message_create_failed")
+		writeError(w, r, "message_create_failed")
 	}
 }
 
@@ -1160,37 +1172,16 @@ func timestamptz(value pgtype.Timestamptz) time.Time {
 func parsePhotoPosition(w http.ResponseWriter, r *http.Request) (int, bool) {
 	position, err := strconv.Atoi(chi.URLParam(r, "position"))
 	if err != nil || position < 0 || position > 3 {
-		writeError(w, http.StatusBadRequest, "invalid_profile_photo_position")
+		writeError(w, r, "invalid_profile_photo_position")
 		return 0, false
 	}
 	return position, true
 }
 
-func profilePhotoExtension(contentType string) (string, bool) {
-	switch contentType {
-	case "image/jpeg":
-		return ".jpg", true
-	case "image/png":
-		return ".png", true
-	case "image/webp":
-		return ".webp", true
-	default:
-		return "", false
-	}
-}
-
-func randomProfilePhotoFilename(userID uuid.UUID, position int, ext string) (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s-%d-%s%s", userID.String(), position, hex.EncodeToString(buf), ext), nil
-}
-
 func parseRouteUUID(w http.ResponseWriter, r *http.Request, key string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(chi.URLParam(r, key))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_uuid")
+		writeError(w, r, "invalid_uuid")
 		return uuid.Nil, false
 	}
 	return id, true

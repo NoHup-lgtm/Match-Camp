@@ -16,6 +16,12 @@ services:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}"
       UPLOAD_DIR: "/app/uploads"
       MAX_PROFILE_PHOTO_BYTES: "${MAX_PROFILE_PHOTO_BYTES:-5242880}"
+      STORAGE_DRIVER: "${STORAGE_DRIVER:-local}"
+      R2_ENDPOINT: "${R2_ENDPOINT:-}"
+      R2_BUCKET: "${R2_BUCKET:-}"
+      R2_ACCESS_KEY_ID: "${R2_ACCESS_KEY_ID:-}"
+      R2_SECRET_ACCESS_KEY: "${R2_SECRET_ACCESS_KEY:-}"
+      R2_PUBLIC_BASE_URL: "${R2_PUBLIC_BASE_URL:-}"
     volumes:
       - uploads-data:/app/uploads
     depends_on:

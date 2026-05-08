@@ -21,6 +21,12 @@ type Config struct {
 	PublicBaseURL        string
 	UploadDir            string
 	MaxProfilePhotoBytes int64
+	StorageDriver        string
+	R2Endpoint           string
+	R2Bucket             string
+	R2AccessKeyID        string
+	R2SecretAccessKey    string
+	R2PublicBaseURL      string
 }
 
 func Load() Config {
@@ -38,6 +44,12 @@ func Load() Config {
 		PublicBaseURL:        env("PUBLIC_BASE_URL", "http://localhost:8080"),
 		UploadDir:            env("UPLOAD_DIR", "/app/uploads"),
 		MaxProfilePhotoBytes: envInt64("MAX_PROFILE_PHOTO_BYTES", 5*1024*1024),
+		StorageDriver:        env("STORAGE_DRIVER", "local"),
+		R2Endpoint:           env("R2_ENDPOINT", ""),
+		R2Bucket:             env("R2_BUCKET", ""),
+		R2AccessKeyID:        env("R2_ACCESS_KEY_ID", ""),
+		R2SecretAccessKey:    env("R2_SECRET_ACCESS_KEY", ""),
+		R2PublicBaseURL:      env("R2_PUBLIC_BASE_URL", ""),
 	}
 }
 

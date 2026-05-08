@@ -13,6 +13,7 @@ import (
 	"matchcamp/internal/config"
 	"matchcamp/internal/database"
 	"matchcamp/internal/server"
+	"matchcamp/internal/storage"
 )
 
 func main() {
@@ -32,9 +33,25 @@ func main() {
 	redisClient := database.OpenRedis(cfg.RedisURL)
 	defer redisClient.Close()
 
+	objectStore, err := storage.New(ctx, storage.Config{
+		Driver:          cfg.StorageDriver,
+		LocalDir:        cfg.UploadDir,
+		LocalPublicBase: cfg.PublicBaseURL,
+		R2Endpoint:      cfg.R2Endpoint,
+		R2Bucket:        cfg.R2Bucket,
+		R2AccessKeyID:   cfg.R2AccessKeyID,
+		R2SecretKey:     cfg.R2SecretAccessKey,
+		R2PublicBaseURL: cfg.R2PublicBaseURL,
+	})
+	if err != nil {
+		log.Error("open object storage", "error", err)
+		os.Exit(1)
+	}
+
 	app := server.New(server.Config{
 		DB:                   db,
 		Redis:                redisClient,
+		Storage:              objectStore,
 		Log:                  log,
 		SessionCookieName:    cfg.SessionCookieName,
 		SessionCookieSecure:  cfg.SessionCookieSecure,

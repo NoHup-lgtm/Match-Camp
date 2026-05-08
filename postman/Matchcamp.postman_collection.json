@@ -29,6 +29,32 @@
       ]
     },
     {
+      "name": "00.0 OpenAPI YAML",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/openapi.yaml"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('openapi yaml ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
+      "name": "00.0 Swagger UI",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/docs"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["pm.test('swagger ui ok', () => pm.response.to.have.status(200));"] }
+        }
+      ]
+    },
+    {
       "name": "00.1 Google OAuth Start - Not Configured",
       "request": {
         "method": "GET",
