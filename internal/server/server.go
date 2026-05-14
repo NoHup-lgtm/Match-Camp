@@ -415,7 +415,28 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, mustUser(r.Context()))
+	user := mustUser(r.Context())
+	row, err := s.queries.GetMyProfile(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, "profile_fetch_failed")
+		return
+	}
+	photos, err := s.queries.ListProfilePhotos(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, "profile_photos_list_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           row.ID,
+		"email":        row.Email,
+		"display_name": row.DisplayName,
+		"bio":          row.Bio,
+		"course":       row.Course,
+		"campus":       row.Campus,
+		"age":          calcAge(row.BirthDate),
+		"visible":      row.Visible,
+		"photos":       profilePhotoResponses(photos),
+	})
 }
 
 type profileRequest struct {
@@ -599,7 +620,12 @@ func (s *Server) deleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
-	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), user.ID)
+	limit, offset := parsePagination(r, 25, 100)
+	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), db.ListDiscoveryProfilesParams{
+		ID:     user.ID,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		writeError(w, r, "discovery_failed")
 		return
@@ -614,6 +640,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{
 			"id":           row.ID,
 			"display_name": row.DisplayName,
+			"age":          calcAge(row.BirthDate),
 			"bio":          row.Bio,
 			"course":       row.Course,
 			"campus":       row.Campus,
@@ -667,10 +694,26 @@ func (s *Server) matches(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		partner := map[string]any{
+			"id":           row.PartnerID,
+			"display_name": row.PartnerDisplayName,
+			"age":          calcAge(row.PartnerBirthDate),
+			"photo_url":    nilIfEmpty(row.PartnerPhotoUrl),
+		}
+		var lastMsg any
+		if row.LastMessageAt.Valid {
+			lastMsg = map[string]any{
+				"text":       row.LastMessageBody,
+				"created_at": timestamptz(row.LastMessageAt),
+				"from_me":    row.LastMessageSenderID == user.ID,
+			}
+		}
 		out = append(out, map[string]any{
 			"match_id":        row.MatchID,
 			"conversation_id": row.ConversationID,
 			"created_at":      timestamptz(row.CreatedAt),
+			"partner":         partner,
+			"last_message":    lastMsg,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -685,10 +728,28 @@ func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		partner := map[string]any{
+			"id":           row.PartnerID,
+			"display_name": row.PartnerDisplayName,
+			"age":          calcAge(row.PartnerBirthDate),
+			"photo_url":    nilIfEmpty(row.PartnerPhotoUrl),
+			"online":       s.isOnline(r.Context(), row.PartnerID),
+		}
+		var lastMsg any
+		if row.LastMessageAt.Valid {
+			lastMsg = map[string]any{
+				"text":       row.LastMessageBody,
+				"created_at": timestamptz(row.LastMessageAt),
+				"from_me":    row.LastMessageSenderID == user.ID,
+			}
+		}
 		out = append(out, map[string]any{
 			"conversation_id": row.ConversationID,
 			"match_id":        row.MatchID,
 			"created_at":      timestamptz(row.CreatedAt),
+			"partner":         partner,
+			"last_message":    lastMsg,
+			"unread_count":    row.UnreadCount,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -704,18 +765,34 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, "not_conversation_member")
 		return
 	}
-	rows, err := s.queries.ListMessages(r.Context(), conversationID)
+	limit, beforeCreatedAt := parseMessagePagination(r)
+	rows, err := s.queries.ListMessagesPaginated(r.Context(), db.ListMessagesPaginatedParams{
+		ConversationID:  conversationID,
+		BeforeCreatedAt: beforeCreatedAt,
+		LimitCount:      int32(limit),
+	})
 	if err != nil {
 		writeError(w, r, "messages_failed")
 		return
 	}
+	// Marcar mensagens do parceiro como lidas.
+	_ = s.queries.MarkMessagesRead(r.Context(), db.MarkMessagesReadParams{
+		ConversationID: conversationID,
+		SenderUserID:   user.ID,
+	})
+	// Query retorna DESC; reverter para exibição cronológica.
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, map[string]any{
-			"id":             row.ID,
-			"sender_user_id": row.SenderUserID,
-			"body":           row.Body,
-			"created_at":     timestamptz(row.CreatedAt),
+			"id":              row.ID,
+			"conversation_id": row.ConversationID,
+			"sender_user_id":  row.SenderUserID,
+			"text":            row.Body,
+			"is_read":         row.IsRead,
+			"created_at":      timestamptz(row.CreatedAt),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -862,6 +939,7 @@ type chatMessageResponse struct {
 	ConversationID uuid.UUID `json:"conversation_id"`
 	SenderUserID   uuid.UUID `json:"sender_user_id"`
 	Text           string    `json:"text"`
+	IsRead         bool      `json:"is_read"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -891,13 +969,22 @@ func (s *Server) createMessage(ctx context.Context, sender uuid.UUID, req chatMe
 		ConversationID: row.ConversationID,
 		SenderUserID:   row.SenderUserID,
 		Text:           row.Body,
+		IsRead:         row.IsRead,
 		CreatedAt:      timestamptz(row.CreatedAt),
 	}
-	payload, _ := json.Marshal(msg)
+	event, _ := json.Marshal(map[string]any{
+		"type":            "message",
+		"id":              msg.ID,
+		"conversation_id": msg.ConversationID,
+		"sender_user_id":  msg.SenderUserID,
+		"text":            msg.Text,
+		"is_read":         msg.IsRead,
+		"created_at":      msg.CreatedAt,
+	})
 	recipients, err := s.conversationMembers(ctx, req.ConversationID)
 	if err == nil {
 		for _, recipient := range recipients {
-			_ = s.redis.Publish(ctx, "user:"+recipient.String(), payload).Err()
+			_ = s.redis.Publish(ctx, "user:"+recipient.String(), event).Err()
 		}
 	}
 	return msg, nil
@@ -976,6 +1063,15 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, uuid.Nil, false, err
+	}
+	// Notificar ambos os usuários do novo match via WebSocket.
+	matchEvent, _ := json.Marshal(map[string]any{
+		"type":            "match",
+		"match_id":        matchID,
+		"conversation_id": conversationID,
+	})
+	for _, uid := range []uuid.UUID{actor, target} {
+		_ = s.redis.Publish(ctx, "user:"+uid.String(), matchEvent).Err()
 	}
 	return matchID, conversationID, true, nil
 }
@@ -1308,4 +1404,61 @@ func normalizePair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func calcAge(birthDate pgtype.Date) *int {
+	if !birthDate.Valid {
+		return nil
+	}
+	now := time.Now()
+	years := now.Year() - birthDate.Time.Year()
+	birthday := time.Date(now.Year(), birthDate.Time.Month(), birthDate.Time.Day(), 0, 0, 0, 0, time.Local)
+	if now.Before(birthday) {
+		years--
+	}
+	return &years
+}
+
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func (s *Server) isOnline(ctx context.Context, userID uuid.UUID) bool {
+	val, err := s.redis.Get(ctx, "presence:"+userID.String()).Result()
+	return err == nil && val == "online"
+}
+
+func parsePagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {
+	limit := defaultLimit
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= maxLimit {
+			limit = n
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
+
+func parseMessagePagination(r *http.Request) (int, pgtype.Timestamptz) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	var before pgtype.Timestamptz
+	if t := r.URL.Query().Get("before"); t != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, t); err == nil {
+			before = pgtype.Timestamptz{Time: parsed, Valid: true}
+		}
+	}
+	return limit, before
 }

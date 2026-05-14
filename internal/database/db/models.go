@@ -19,9 +19,10 @@ type AuthIdentity struct {
 }
 
 type Conversation struct {
-	ID        uuid.UUID          `json:"id"`
-	MatchID   uuid.UUID          `json:"match_id"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            uuid.UUID          `json:"id"`
+	MatchID       uuid.UUID          `json:"match_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	LastMessageAt pgtype.Timestamptz `json:"last_message_at"`
 }
 
 type ConversationMember struct {
@@ -43,6 +44,7 @@ type Message struct {
 	SenderUserID   uuid.UUID          `json:"sender_user_id"`
 	Body           string             `json:"body"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	IsRead         bool               `json:"is_read"`
 }
 
 type Profile struct {

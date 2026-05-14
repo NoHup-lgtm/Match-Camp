@@ -15,8 +15,22 @@ WHERE user_id = $1
   AND char_length(course) > 0
   AND char_length(campus) > 0;
 
+-- name: GetMyProfile :one
+SELECT
+    u.id,
+    u.email,
+    u.display_name,
+    COALESCE(p.bio, '') AS bio,
+    COALESCE(p.course, '') AS course,
+    COALESCE(p.campus, '') AS campus,
+    p.birth_date,
+    COALESCE(p.visible, false) AS visible
+FROM users u
+LEFT JOIN profiles p ON p.user_id = u.id
+WHERE u.id = $1;
+
 -- name: ListDiscoveryProfiles :many
-SELECT u.id, u.display_name, p.bio, p.course, p.campus
+SELECT u.id, u.display_name, p.bio, p.course, p.campus, p.birth_date
 FROM users u
 JOIN profiles p ON p.user_id = u.id
 WHERE p.visible = true
@@ -26,7 +40,7 @@ WHERE p.visible = true
     WHERE sw.actor_user_id = $1 AND sw.target_user_id = u.id
   )
 ORDER BY p.updated_at DESC
-LIMIT 25;
+LIMIT $2 OFFSET $3;
 
 -- name: ListProfilePhotos :many
 SELECT id, user_id, url, position, created_at

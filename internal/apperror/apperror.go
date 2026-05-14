@@ -74,6 +74,7 @@ var definitions = map[string]Definition{
 	"invalid_uuid":                    {Code: "invalid_uuid", Message: "Identificador invalido.", Status: http.StatusBadRequest},
 	"internal_error":                  {Code: "internal_error", Message: "Erro interno.", Status: http.StatusInternalServerError},
 	"rate_limit_exceeded":             {Code: "rate_limit_exceeded", Message: "Muitas requisicoes. Tente novamente em instantes.", Status: http.StatusTooManyRequests},
+	"profile_fetch_failed":            {Code: "profile_fetch_failed", Message: "Falha ao carregar perfil.", Status: http.StatusInternalServerError},
 }
 
 func Lookup(code string) Definition {

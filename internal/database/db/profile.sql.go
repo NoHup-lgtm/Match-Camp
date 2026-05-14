@@ -36,6 +36,48 @@ func (q *Queries) DeleteProfilePhotoByPosition(ctx context.Context, arg DeletePr
 	return i, err
 }
 
+const getMyProfile = `-- name: GetMyProfile :one
+SELECT
+    u.id,
+    u.email,
+    u.display_name,
+    COALESCE(p.bio, '') AS bio,
+    COALESCE(p.course, '') AS course,
+    COALESCE(p.campus, '') AS campus,
+    p.birth_date,
+    COALESCE(p.visible, false) AS visible
+FROM users u
+LEFT JOIN profiles p ON p.user_id = u.id
+WHERE u.id = $1
+`
+
+type GetMyProfileRow struct {
+	ID          uuid.UUID   `json:"id"`
+	Email       string      `json:"email"`
+	DisplayName string      `json:"display_name"`
+	Bio         string      `json:"bio"`
+	Course      string      `json:"course"`
+	Campus      string      `json:"campus"`
+	BirthDate   pgtype.Date `json:"birth_date"`
+	Visible     bool        `json:"visible"`
+}
+
+func (q *Queries) GetMyProfile(ctx context.Context, id uuid.UUID) (GetMyProfileRow, error) {
+	row := q.db.QueryRow(ctx, getMyProfile, id)
+	var i GetMyProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Bio,
+		&i.Course,
+		&i.Campus,
+		&i.BirthDate,
+		&i.Visible,
+	)
+	return i, err
+}
+
 const getProfilePhotoByPosition = `-- name: GetProfilePhotoByPosition :one
 SELECT id, user_id, url, position, created_at
 FROM profile_photos
@@ -61,7 +103,7 @@ func (q *Queries) GetProfilePhotoByPosition(ctx context.Context, arg GetProfileP
 }
 
 const listDiscoveryProfiles = `-- name: ListDiscoveryProfiles :many
-SELECT u.id, u.display_name, p.bio, p.course, p.campus
+SELECT u.id, u.display_name, p.bio, p.course, p.campus, p.birth_date
 FROM users u
 JOIN profiles p ON p.user_id = u.id
 WHERE p.visible = true
@@ -71,19 +113,26 @@ WHERE p.visible = true
     WHERE sw.actor_user_id = $1 AND sw.target_user_id = u.id
   )
 ORDER BY p.updated_at DESC
-LIMIT 25
+LIMIT $2 OFFSET $3
 `
 
-type ListDiscoveryProfilesRow struct {
-	ID          uuid.UUID `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Bio         string    `json:"bio"`
-	Course      string    `json:"course"`
-	Campus      string    `json:"campus"`
+type ListDiscoveryProfilesParams struct {
+	ID     uuid.UUID `json:"id"`
+	Limit  int32     `json:"limit"`
+	Offset int32     `json:"offset"`
 }
 
-func (q *Queries) ListDiscoveryProfiles(ctx context.Context, id uuid.UUID) ([]ListDiscoveryProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listDiscoveryProfiles, id)
+type ListDiscoveryProfilesRow struct {
+	ID          uuid.UUID   `json:"id"`
+	DisplayName string      `json:"display_name"`
+	Bio         string      `json:"bio"`
+	Course      string      `json:"course"`
+	Campus      string      `json:"campus"`
+	BirthDate   pgtype.Date `json:"birth_date"`
+}
+
+func (q *Queries) ListDiscoveryProfiles(ctx context.Context, arg ListDiscoveryProfilesParams) ([]ListDiscoveryProfilesRow, error) {
+	rows, err := q.db.Query(ctx, listDiscoveryProfiles, arg.ID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +146,7 @@ func (q *Queries) ListDiscoveryProfiles(ctx context.Context, id uuid.UUID) ([]Li
 			&i.Bio,
 			&i.Course,
 			&i.Campus,
+			&i.BirthDate,
 		); err != nil {
 			return nil, err
 		}
