@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"crypto/tls"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -23,10 +24,22 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func OpenRedis(url string) *redis.Client {
-	opt, err := redis.ParseURL(url)
+type RedisConfig struct {
+	URL      string
+	Password string
+	TLS      bool
+}
+
+func OpenRedis(cfg RedisConfig) *redis.Client {
+	opt, err := redis.ParseURL(cfg.URL)
 	if err != nil {
 		opt = &redis.Options{Addr: "localhost:6379"}
+	}
+	if cfg.Password != "" {
+		opt.Password = cfg.Password
+	}
+	if cfg.TLS {
+		opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	return redis.NewClient(opt)
 }

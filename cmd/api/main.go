@@ -30,7 +30,11 @@ func main() {
 	}
 	defer db.Close()
 
-	redisClient := database.OpenRedis(cfg.RedisURL)
+	redisClient := database.OpenRedis(database.RedisConfig{
+		URL:      cfg.RedisURL,
+		Password: cfg.RedisPassword,
+		TLS:      cfg.RedisTLS,
+	})
 	defer redisClient.Close()
 
 	objectStore, err := storage.New(ctx, storage.Config{
@@ -62,6 +66,7 @@ func main() {
 		PublicBaseURL:        cfg.PublicBaseURL,
 		UploadDir:            cfg.UploadDir,
 		MaxProfilePhotoBytes: cfg.MaxProfilePhotoBytes,
+		AllowedOrigins:       cfg.AllowedOrigins,
 	})
 
 	srv := &http.Server{

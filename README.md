@@ -7,21 +7,21 @@ Backend/infra MVP para um app de matches da faculdade.
 - Go: API REST e WebSocket.
 - PostgreSQL: fonte da verdade.
 - Redis: presenca e fanout em tempo real.
-- Docker Compose: ambiente local quando existir runtime de container.
+- Podman: runtime de container local (substitui Docker).
 - goose: migrations.
 - sqlc: queries SQL gerando codigo Go tipado.
 - Cloudflare R2: object storage de producao para fotos de perfil.
 
 ## Bootstrap
 
-Com Docker/Podman funcionando:
+Com Podman funcionando (instale via `brew install podman` e inicialize com `podman machine init && podman machine start`):
 
 ```sh
 cp .env.example .env
 go mod tidy
 sqlc generate
 go test ./...
-docker compose up --build
+podman compose up --build
 ```
 
 Em outra aba, aplicar migrations:
@@ -31,7 +31,7 @@ go install github.com/pressly/goose/v3/cmd/goose@latest
 goose -dir migrations postgres "postgres://matchcamp:matchcamp@localhost:5432/matchcamp?sslmode=disable" up
 ```
 
-Sem Docker/Podman, rode PostgreSQL e Redis nativos ou use servicos gerenciados.
+Sem Podman, rode PostgreSQL e Redis nativos ou use servicos gerenciados.
 A API nao depende de container; ela depende de socket TCP aberto para Postgres e Redis.
 
 Exemplo com Homebrew:
@@ -94,7 +94,7 @@ curl -X PUT \
 
 Formatos aceitos: JPEG, PNG e WebP. O limite padrao e 5 MiB por foto.
 Em dev, as fotos ficam no diretorio configurado por `UPLOAD_DIR` com `STORAGE_DRIVER=local`.
-No Compose, esse diretorio usa o volume Docker `uploads-data`.
+No Compose, esse diretorio usa o volume `uploads-data` gerenciado pelo Podman.
 Em producao, use `STORAGE_DRIVER=r2` com Cloudflare R2.
 
 ## Erros
@@ -129,5 +129,6 @@ Qualquer campo extra e rejeitado. Links `http://`, `https://` e `data:` tambem s
 - WebSocket: upgrade HTTP, conexao longa, file descriptors, backpressure.
 - PostgreSQL: MVCC, transacoes, indices unicos, foreign keys, locks.
 - Redis Pub/Sub: fanout sem persistencia e sem entrega para offline.
-- Containers: namespaces, cgroups, bridge network, volumes. Sem runtime de container, o custo
-  operacional vira instalar e manter Postgres/Redis diretamente no sistema ou consumir servicos gerenciados.
+- Containers: namespaces, cgroups, bridge network, volumes. Podman roda rootless por padrao. Sem
+  runtime de container, o custo operacional vira instalar e manter Postgres/Redis diretamente no
+  sistema ou consumir servicos gerenciados.

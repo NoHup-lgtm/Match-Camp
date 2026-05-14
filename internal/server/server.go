@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"matchcamp/internal/apperror"
@@ -28,11 +29,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/time/rate"
 )
 
 const sessionTTL = 30 * 24 * time.Hour
 const oauthStateCookieName = "matchcamp_oauth_state"
 const profilePhotoFormField = "photo"
+
+const (
+	wsPingInterval = 30 * time.Second
+	wsPongWait     = 60 * time.Second
+	wsWriteWait    = 10 * time.Second
+)
 
 type Config struct {
 	DB                   *pgxpool.Pool
@@ -42,6 +50,7 @@ type Config struct {
 	SessionCookieName    string
 	SessionCookieSecure  bool
 	AllowedEmailDomains  []string
+	AllowedOrigins       []string
 	GoogleClientID       string
 	GoogleClientSecret   string
 	GoogleRedirectURL    string
@@ -59,6 +68,7 @@ type Server struct {
 	sessionCookieName    string
 	sessionCookieSecure  bool
 	allowedDomains       map[string]struct{}
+	allowedOrigins       map[string]struct{}
 	googleClientID       string
 	googleClientSecret   string
 	googleRedirectURL    string
@@ -66,6 +76,10 @@ type Server struct {
 	uploadDir            string
 	maxProfilePhotoBytes int64
 	upgrader             websocket.Upgrader
+	registerLimiter      *keyedLimiter
+	loginLimiter         *keyedLimiter
+	swipeLimiter         *keyedLimiter
+	messageLimiter       *keyedLimiter
 }
 
 type userContextKey struct{}
@@ -81,6 +95,10 @@ func New(cfg Config) *Server {
 	for _, domain := range cfg.AllowedEmailDomains {
 		domains[strings.ToLower(domain)] = struct{}{}
 	}
+	origins := make(map[string]struct{}, len(cfg.AllowedOrigins))
+	for _, o := range cfg.AllowedOrigins {
+		origins[strings.ToLower(o)] = struct{}{}
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
@@ -93,6 +111,7 @@ func New(cfg Config) *Server {
 		sessionCookieName:    cfg.SessionCookieName,
 		sessionCookieSecure:  cfg.SessionCookieSecure,
 		allowedDomains:       domains,
+		allowedOrigins:       origins,
 		googleClientID:       cfg.GoogleClientID,
 		googleClientSecret:   cfg.GoogleClientSecret,
 		googleRedirectURL:    cfg.GoogleRedirectURL,
@@ -102,6 +121,12 @@ func New(cfg Config) *Server {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
+		// IP-based: 5 req/min burst 10 for register; 10 req/min burst 20 for login
+		registerLimiter: newKeyedLimiter(rate.Every(12*time.Second), 10),
+		loginLimiter:    newKeyedLimiter(rate.Every(6*time.Second), 20),
+		// User-based: 60 req/min for swipes; 30 req/min burst 60 for messages
+		swipeLimiter:   newKeyedLimiter(rate.Every(time.Second), 60),
+		messageLimiter: newKeyedLimiter(rate.Every(2*time.Second), 60),
 	}
 }
 
@@ -111,6 +136,7 @@ func (s *Server) Routes() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Logger)
+	r.Use(s.cors)
 
 	r.Get("/health", s.health)
 	r.Get("/openapi.yaml", s.openapi)
@@ -144,6 +170,31 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	return r
+}
+
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			allowed := len(s.allowedOrigins) == 0
+			if !allowed {
+				_, allowed = s.allowedOrigins[strings.ToLower(origin)]
+			}
+			if allowed {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Add("Vary", "Origin")
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +243,10 @@ type registerRequest struct {
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	if !s.registerLimiter.allow(clientIP(r)) {
+		writeError(w, r, "rate_limit_exceeded")
+		return
+	}
 	var req registerRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -241,6 +296,10 @@ type loginRequest struct {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if !s.loginLimiter.allow(clientIP(r)) {
+		writeError(w, r, "rate_limit_exceeded")
+		return
+	}
 	var req loginRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -571,6 +630,10 @@ type swipeRequest struct {
 
 func (s *Server) swipe(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
+	if !s.swipeLimiter.allow(user.ID.String()) {
+		writeError(w, r, "rate_limit_exceeded")
+		return
+	}
 	var req swipeRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -660,6 +723,10 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createMessageHTTP(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
+	if !s.messageLimiter.allow(user.ID.String()) {
+		writeError(w, r, "rate_limit_exceeded")
+		return
+	}
 	conversationID, ok := parseRouteUUID(w, r, "id")
 	if !ok {
 		return
@@ -691,6 +758,23 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	// Serializa todas as escritas para evitar panic com goroutines concorrentes.
+	var writeMu sync.Mutex
+	wsWrite := func(msgType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+		return conn.WriteMessage(msgType, data)
+	}
+	wsWriteJSON := func(v any) error {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return wsWrite(websocket.TextMessage, data)
+	}
+
 	presenceKey := "presence:" + user.ID.String()
 	_ = s.redis.Set(ctx, presenceKey, "online", 45*time.Second).Err()
 	defer s.redis.Del(context.Background(), presenceKey)
@@ -698,19 +782,28 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	pubsub := s.redis.Subscribe(ctx, "user:"+user.ID.String())
 	defer pubsub.Close()
 
+	// Ping periódico + renovação de presença.
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
+		presenceTicker := time.NewTicker(20 * time.Second)
+		pingTicker := time.NewTicker(wsPingInterval)
+		defer presenceTicker.Stop()
+		defer pingTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-presenceTicker.C:
 				_ = s.redis.Set(ctx, presenceKey, "online", 45*time.Second).Err()
+			case <-pingTicker.C:
+				if wsWrite(websocket.PingMessage, nil) != nil {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
 
+	// Fanout de mensagens recebidas via Redis Pub/Sub.
 	go func() {
 		ch := pubsub.Channel()
 		for {
@@ -721,10 +814,20 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if msg == nil {
 					return
 				}
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
+				if wsWrite(websocket.TextMessage, []byte(msg.Payload)) != nil {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
+
+	// Reset do deadline de leitura a cada pong recebido.
+	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
 
 	for {
 		_, data, err := conn.ReadMessage()
@@ -733,19 +836,19 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 		req, err := parseChatPayloadBytes(data)
 		if err != nil {
-			_ = conn.WriteJSON(map[string]string{"error": err.Error()})
+			_ = wsWriteJSON(map[string]string{"error": err.Error()})
 			continue
 		}
 		if err := validateChatPayload(req); err != nil {
-			_ = conn.WriteJSON(map[string]string{"error": err.Error()})
+			_ = wsWriteJSON(map[string]string{"error": err.Error()})
 			continue
 		}
 		msg, err := s.createMessage(ctx, user.ID, req)
 		if err != nil {
-			_ = conn.WriteJSON(map[string]string{"error": err.Error()})
+			_ = wsWriteJSON(map[string]string{"error": err.Error()})
 			continue
 		}
-		_ = conn.WriteJSON(msg)
+		_ = wsWriteJSON(msg)
 	}
 }
 

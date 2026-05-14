@@ -25,7 +25,7 @@ migrate-down:
 	goose -dir migrations postgres "$(DATABASE_URL)" down
 
 compose-up:
-	docker compose up --build
+	podman compose up --build
 
 compose-down:
-	docker compose down
+	podman compose down
