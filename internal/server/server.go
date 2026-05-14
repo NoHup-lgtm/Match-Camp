@@ -162,6 +162,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/discovery", s.discovery)
 			r.Post("/swipes", s.swipe)
 			r.Get("/matches", s.matches)
+			r.Get("/users/{id}", s.publicProfile)
 			r.Get("/conversations", s.conversations)
 			r.Get("/conversations/{id}/messages", s.messages)
 			r.Post("/conversations/{id}/messages", s.createMessageHTTP)
@@ -618,6 +619,46 @@ func (s *Server) deleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) publicProfile(w http.ResponseWriter, r *http.Request) {
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	profile, err := s.queries.GetPublicProfile(r.Context(), targetID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, r, "user_not_found")
+			return
+		}
+		writeError(w, r, "profile_fetch_failed")
+		return
+	}
+	photos, err := s.queries.ListProfilePhotos(r.Context(), targetID)
+	if err != nil {
+		writeError(w, r, "profile_photos_list_failed")
+		return
+	}
+	type photo struct {
+		ID       uuid.UUID `json:"id"`
+		URL      string    `json:"url"`
+		Position int32     `json:"position"`
+	}
+	photoList := make([]photo, 0, len(photos))
+	for _, ph := range photos {
+		photoList = append(photoList, photo{ID: ph.ID, URL: ph.Url, Position: ph.Position})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           profile.ID,
+		"display_name": profile.DisplayName,
+		"age":          calcAge(profile.BirthDate),
+		"bio":          profile.Bio,
+		"course":       profile.Course,
+		"campus":       profile.Campus,
+		"photos":       photoList,
+	})
+}
+
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	limit, offset := parsePagination(r, 25, 100)
@@ -1064,14 +1105,23 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, uuid.Nil, false, err
 	}
-	// Notificar ambos os usuários do novo match via WebSocket.
-	matchEvent, _ := json.Marshal(map[string]any{
-		"type":            "match",
-		"match_id":        matchID,
-		"conversation_id": conversationID,
-	})
-	for _, uid := range []uuid.UUID{actor, target} {
-		_ = s.redis.Publish(ctx, "user:"+uid.String(), matchEvent).Err()
+	// Notificar ambos os usuários do novo match via WebSocket com dados do parceiro.
+	actorProfile, _ := s.queries.GetPublicProfile(ctx, actor)
+	targetProfile, _ := s.queries.GetPublicProfile(ctx, target)
+	for _, pair := range []struct {
+		recipient uuid.UUID
+		partner   any
+	}{
+		{actor, map[string]any{"id": targetProfile.ID, "display_name": targetProfile.DisplayName, "photo_url": nilIfEmpty(targetProfile.PhotoUrl)}},
+		{target, map[string]any{"id": actorProfile.ID, "display_name": actorProfile.DisplayName, "photo_url": nilIfEmpty(actorProfile.PhotoUrl)}},
+	} {
+		ev, _ := json.Marshal(map[string]any{
+			"type":            "match",
+			"match_id":        matchID,
+			"conversation_id": conversationID,
+			"partner":         pair.partner,
+		})
+		_ = s.redis.Publish(ctx, "user:"+pair.recipient.String(), ev).Err()
 	}
 	return matchID, conversationID, true, nil
 }

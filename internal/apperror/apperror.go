@@ -75,6 +75,7 @@ var definitions = map[string]Definition{
 	"internal_error":                  {Code: "internal_error", Message: "Erro interno.", Status: http.StatusInternalServerError},
 	"rate_limit_exceeded":             {Code: "rate_limit_exceeded", Message: "Muitas requisicoes. Tente novamente em instantes.", Status: http.StatusTooManyRequests},
 	"profile_fetch_failed":            {Code: "profile_fetch_failed", Message: "Falha ao carregar perfil.", Status: http.StatusInternalServerError},
+	"user_not_found":                  {Code: "user_not_found", Message: "Usuario nao encontrado.", Status: http.StatusNotFound},
 }
 
 func Lookup(code string) Definition {

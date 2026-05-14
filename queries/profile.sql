@@ -42,6 +42,20 @@ WHERE p.visible = true
 ORDER BY p.updated_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: GetPublicProfile :one
+SELECT
+    u.id,
+    u.display_name,
+    COALESCE(p.bio, '') AS bio,
+    COALESCE(p.course, '') AS course,
+    COALESCE(p.campus, '') AS campus,
+    p.birth_date,
+    COALESCE(p.visible, false) AS visible,
+    COALESCE((SELECT url FROM profile_photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1), '')::text AS photo_url
+FROM users u
+LEFT JOIN profiles p ON p.user_id = u.id
+WHERE u.id = $1;
+
 -- name: ListProfilePhotos :many
 SELECT id, user_id, url, position, created_at
 FROM profile_photos

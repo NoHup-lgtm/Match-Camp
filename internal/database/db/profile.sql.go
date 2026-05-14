@@ -102,6 +102,48 @@ func (q *Queries) GetProfilePhotoByPosition(ctx context.Context, arg GetProfileP
 	return i, err
 }
 
+const getPublicProfile = `-- name: GetPublicProfile :one
+SELECT
+    u.id,
+    u.display_name,
+    COALESCE(p.bio, '') AS bio,
+    COALESCE(p.course, '') AS course,
+    COALESCE(p.campus, '') AS campus,
+    p.birth_date,
+    COALESCE(p.visible, false) AS visible,
+    COALESCE((SELECT url FROM profile_photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1), '')::text AS photo_url
+FROM users u
+LEFT JOIN profiles p ON p.user_id = u.id
+WHERE u.id = $1
+`
+
+type GetPublicProfileRow struct {
+	ID          uuid.UUID   `json:"id"`
+	DisplayName string      `json:"display_name"`
+	Bio         string      `json:"bio"`
+	Course      string      `json:"course"`
+	Campus      string      `json:"campus"`
+	BirthDate   pgtype.Date `json:"birth_date"`
+	Visible     bool        `json:"visible"`
+	PhotoUrl    string      `json:"photo_url"`
+}
+
+func (q *Queries) GetPublicProfile(ctx context.Context, id uuid.UUID) (GetPublicProfileRow, error) {
+	row := q.db.QueryRow(ctx, getPublicProfile, id)
+	var i GetPublicProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.Bio,
+		&i.Course,
+		&i.Campus,
+		&i.BirthDate,
+		&i.Visible,
+		&i.PhotoUrl,
+	)
+	return i, err
+}
+
 const listDiscoveryProfiles = `-- name: ListDiscoveryProfiles :many
 SELECT u.id, u.display_name, p.bio, p.course, p.campus, p.birth_date
 FROM users u
