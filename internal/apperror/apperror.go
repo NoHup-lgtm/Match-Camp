@@ -73,6 +73,7 @@ var definitions = map[string]Definition{
 	"session_lookup_failed":           {Code: "session_lookup_failed", Message: "Falha ao validar sessao.", Status: http.StatusInternalServerError},
 	"invalid_uuid":                    {Code: "invalid_uuid", Message: "Identificador invalido.", Status: http.StatusBadRequest},
 	"internal_error":                  {Code: "internal_error", Message: "Erro interno.", Status: http.StatusInternalServerError},
+	"rate_limit_exceeded":             {Code: "rate_limit_exceeded", Message: "Muitas requisicoes. Tente novamente em instantes.", Status: http.StatusTooManyRequests},
 }
 
 func Lookup(code string) Definition {

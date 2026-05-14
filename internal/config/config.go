@@ -11,10 +11,13 @@ type Config struct {
 	HTTPAddr             string
 	DatabaseURL          string
 	RedisURL             string
+	RedisPassword        string
+	RedisTLS             bool
 	LogLevel             slog.Level
 	SessionCookieName    string
 	SessionCookieSecure  bool
 	AllowedEmailDomains  []string
+	AllowedOrigins       []string
 	GoogleClientID       string
 	GoogleClientSecret   string
 	GoogleRedirectURL    string
@@ -34,10 +37,13 @@ func Load() Config {
 		HTTPAddr:             env("HTTP_ADDR", ":8080"),
 		DatabaseURL:          env("DATABASE_URL", "postgres://matchcamp:matchcamp@localhost:5432/matchcamp?sslmode=disable"),
 		RedisURL:             env("REDIS_URL", "redis://localhost:6379/0"),
+		RedisPassword:        env("REDIS_PASSWORD", ""),
+		RedisTLS:             envBool("REDIS_TLS", false),
 		LogLevel:             parseLogLevel(env("LOG_LEVEL", "info")),
 		SessionCookieName:    env("SESSION_COOKIE_NAME", "matchcamp_session"),
 		SessionCookieSecure:  envBool("SESSION_COOKIE_SECURE", false),
 		AllowedEmailDomains:  splitCSV(env("ALLOWED_EMAIL_DOMAINS", "")),
+		AllowedOrigins:       splitCSV(env("ALLOWED_ORIGINS", "")),
 		GoogleClientID:       env("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret:   env("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:    env("GOOGLE_REDIRECT_URL", "http://localhost:8080/v1/auth/google/callback"),
