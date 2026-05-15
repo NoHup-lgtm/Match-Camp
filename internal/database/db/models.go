@@ -18,6 +18,12 @@ type AuthIdentity struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type Block struct {
+	BlockerID uuid.UUID          `json:"blocker_id"`
+	BlockedID uuid.UUID          `json:"blocked_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Conversation struct {
 	ID            uuid.UUID          `json:"id"`
 	MatchID       uuid.UUID          `json:"match_id"`

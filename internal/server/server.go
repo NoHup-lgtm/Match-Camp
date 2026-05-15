@@ -156,6 +156,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.me)
 			r.Put("/profile", s.upsertProfile)
 			r.Patch("/profile/visibility", s.updateVisibility)
+			r.Put("/profile/preferences", s.upsertPreferences)
 			r.Get("/profile/photos", s.listMyProfilePhotos)
 			r.Put("/profile/photos/{position}", s.uploadProfilePhoto)
 			r.Delete("/profile/photos/{position}", s.deleteProfilePhoto)
@@ -163,6 +164,8 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/swipes", s.swipe)
 			r.Get("/matches", s.matches)
 			r.Get("/users/{id}", s.publicProfile)
+			r.Post("/users/{id}/block", s.blockUser)
+			r.Delete("/users/{id}/block", s.unblockUser)
 			r.Get("/conversations", s.conversations)
 			r.Get("/conversations/{id}/messages", s.messages)
 			r.Post("/conversations/{id}/messages", s.createMessageHTTP)
@@ -516,6 +519,37 @@ func (s *Server) updateVisibility(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"visible": req.Visible})
 }
 
+func (s *Server) upsertPreferences(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	var req struct {
+		InterestedIn string `json:"interested_in"`
+		MinAge       int32  `json:"min_age"`
+		MaxAge       int32  `json:"max_age"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	allowed := map[string]bool{"everyone": true, "men": true, "women": true}
+	if !allowed[req.InterestedIn] || req.MinAge < 18 || req.MaxAge > 99 || req.MinAge > req.MaxAge {
+		writeError(w, r, "invalid_preferences_payload")
+		return
+	}
+	if err := s.queries.UpsertPreferences(r.Context(), db.UpsertPreferencesParams{
+		UserID:       user.ID,
+		InterestedIn: req.InterestedIn,
+		MinAge:       req.MinAge,
+		MaxAge:       req.MaxAge,
+	}); err != nil {
+		writeError(w, r, "preferences_save_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interested_in": req.InterestedIn,
+		"min_age":       req.MinAge,
+		"max_age":       req.MaxAge,
+	})
+}
+
 func (s *Server) listMyProfilePhotos(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	photos, err := s.queries.ListProfilePhotos(r.Context(), user.ID)
@@ -659,11 +693,49 @@ func (s *Server) publicProfile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) blockUser(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	if targetID == user.ID {
+		writeError(w, r, "cannot_block_self")
+		return
+	}
+	if err := s.queries.BlockUser(r.Context(), db.BlockUserParams{
+		BlockerID: user.ID,
+		BlockedID: targetID,
+	}); err != nil {
+		writeError(w, r, "block_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) unblockUser(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	if err := s.queries.UnblockUser(r.Context(), db.UnblockUserParams{
+		BlockerID: user.ID,
+		BlockedID: targetID,
+	}); err != nil {
+		writeError(w, r, "unblock_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
 	limit, offset := parsePagination(r, 25, 100)
 	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), db.ListDiscoveryProfilesParams{
-		ID:     user.ID,
+		UserID: user.ID,
 		Limit:  int32(limit),
 		Offset: int32(offset),
 	})
@@ -952,6 +1024,33 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+
+		// Typing indicator: {"type":"typing","conversation_id":"uuid"}
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &peek) == nil && peek.Type == "typing" {
+			var typingReq struct {
+				ConversationID uuid.UUID `json:"conversation_id"`
+			}
+			if json.Unmarshal(data, &typingReq) == nil && typingReq.ConversationID != uuid.Nil {
+				if s.isConversationMember(ctx, typingReq.ConversationID, user.ID) {
+					members, _ := s.conversationMembers(ctx, typingReq.ConversationID)
+					event, _ := json.Marshal(map[string]any{
+						"type":            "typing",
+						"conversation_id": typingReq.ConversationID,
+						"user_id":         user.ID,
+					})
+					for _, m := range members {
+						if m != user.ID {
+							_ = s.redis.Publish(ctx, "user:"+m.String(), event).Err()
+						}
+					}
+				}
+			}
+			continue
+		}
+
 		req, err := parseChatPayloadBytes(data)
 		if err != nil {
 			_ = wsWriteJSON(map[string]string{"error": err.Error()})

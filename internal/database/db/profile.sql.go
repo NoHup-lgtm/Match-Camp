@@ -12,6 +12,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const blockUser = `-- name: BlockUser :exec
+INSERT INTO blocks (blocker_id, blocked_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type BlockUserParams struct {
+	BlockerID uuid.UUID `json:"blocker_id"`
+	BlockedID uuid.UUID `json:"blocked_id"`
+}
+
+func (q *Queries) BlockUser(ctx context.Context, arg BlockUserParams) error {
+	_, err := q.db.Exec(ctx, blockUser, arg.BlockerID, arg.BlockedID)
+	return err
+}
+
 const deleteProfilePhotoByPosition = `-- name: DeleteProfilePhotoByPosition :one
 DELETE FROM profile_photos
 WHERE user_id = $1 AND position = $2
@@ -75,6 +91,25 @@ func (q *Queries) GetMyProfile(ctx context.Context, id uuid.UUID) (GetMyProfileR
 		&i.BirthDate,
 		&i.Visible,
 	)
+	return i, err
+}
+
+const getPreferences = `-- name: GetPreferences :one
+SELECT interested_in, min_age, max_age
+FROM profile_preferences
+WHERE user_id = $1
+`
+
+type GetPreferencesRow struct {
+	InterestedIn string `json:"interested_in"`
+	MinAge       int32  `json:"min_age"`
+	MaxAge       int32  `json:"max_age"`
+}
+
+func (q *Queries) GetPreferences(ctx context.Context, userID uuid.UUID) (GetPreferencesRow, error) {
+	row := q.db.QueryRow(ctx, getPreferences, userID)
+	var i GetPreferencesRow
+	err := row.Scan(&i.InterestedIn, &i.MinAge, &i.MaxAge)
 	return i, err
 }
 
@@ -144,22 +179,52 @@ func (q *Queries) GetPublicProfile(ctx context.Context, id uuid.UUID) (GetPublic
 	return i, err
 }
 
+const isBlocked = `-- name: IsBlocked :one
+SELECT EXISTS (
+    SELECT 1 FROM blocks
+    WHERE blocker_id = $1 AND blocked_id = $2
+) AS blocked
+`
+
+type IsBlockedParams struct {
+	BlockerID uuid.UUID `json:"blocker_id"`
+	BlockedID uuid.UUID `json:"blocked_id"`
+}
+
+func (q *Queries) IsBlocked(ctx context.Context, arg IsBlockedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isBlocked, arg.BlockerID, arg.BlockedID)
+	var blocked bool
+	err := row.Scan(&blocked)
+	return blocked, err
+}
+
 const listDiscoveryProfiles = `-- name: ListDiscoveryProfiles :many
 SELECT u.id, u.display_name, p.bio, p.course, p.campus, p.birth_date
 FROM users u
 JOIN profiles p ON p.user_id = u.id
+LEFT JOIN profile_preferences pref ON pref.user_id = $1
 WHERE p.visible = true
   AND u.id <> $1
   AND NOT EXISTS (
     SELECT 1 FROM swipes sw
     WHERE sw.actor_user_id = $1 AND sw.target_user_id = u.id
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM blocks b
+    WHERE (b.blocker_id = $1 AND b.blocked_id = u.id)
+       OR (b.blocker_id = u.id AND b.blocked_id = $1)
+  )
+  AND (
+    pref.min_age IS NULL
+    OR p.birth_date IS NULL
+    OR EXTRACT(YEAR FROM AGE(p.birth_date)) BETWEEN COALESCE(pref.min_age, 18) AND COALESCE(pref.max_age, 99)
+  )
 ORDER BY p.updated_at DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListDiscoveryProfilesParams struct {
-	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
 	Limit  int32     `json:"limit"`
 	Offset int32     `json:"offset"`
 }
@@ -174,7 +239,7 @@ type ListDiscoveryProfilesRow struct {
 }
 
 func (q *Queries) ListDiscoveryProfiles(ctx context.Context, arg ListDiscoveryProfilesParams) ([]ListDiscoveryProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listDiscoveryProfiles, arg.ID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listDiscoveryProfiles, arg.UserID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +298,20 @@ func (q *Queries) ListProfilePhotos(ctx context.Context, userID uuid.UUID) ([]Pr
 	return items, nil
 }
 
+const unblockUser = `-- name: UnblockUser :exec
+DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2
+`
+
+type UnblockUserParams struct {
+	BlockerID uuid.UUID `json:"blocker_id"`
+	BlockedID uuid.UUID `json:"blocked_id"`
+}
+
+func (q *Queries) UnblockUser(ctx context.Context, arg UnblockUserParams) error {
+	_, err := q.db.Exec(ctx, unblockUser, arg.BlockerID, arg.BlockedID)
+	return err
+}
+
 const updateProfileVisibility = `-- name: UpdateProfileVisibility :execrows
 UPDATE profiles
 SET visible = $2, updated_at = now()
@@ -252,6 +331,33 @@ func (q *Queries) UpdateProfileVisibility(ctx context.Context, arg UpdateProfile
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertPreferences = `-- name: UpsertPreferences :exec
+INSERT INTO profile_preferences (user_id, interested_in, min_age, max_age)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id) DO UPDATE SET
+    interested_in = EXCLUDED.interested_in,
+    min_age       = EXCLUDED.min_age,
+    max_age       = EXCLUDED.max_age,
+    updated_at    = now()
+`
+
+type UpsertPreferencesParams struct {
+	UserID       uuid.UUID `json:"user_id"`
+	InterestedIn string    `json:"interested_in"`
+	MinAge       int32     `json:"min_age"`
+	MaxAge       int32     `json:"max_age"`
+}
+
+func (q *Queries) UpsertPreferences(ctx context.Context, arg UpsertPreferencesParams) error {
+	_, err := q.db.Exec(ctx, upsertPreferences,
+		arg.UserID,
+		arg.InterestedIn,
+		arg.MinAge,
+		arg.MaxAge,
+	)
+	return err
 }
 
 const upsertProfile = `-- name: UpsertProfile :exec
