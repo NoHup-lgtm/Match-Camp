@@ -50,7 +50,7 @@ func New(ctx context.Context, cfg Config) (ObjectStore, error) {
 }
 
 func ProfilePhotoKey(userID uuid.UUID, position int, ext string) (string, error) {
-	if position < 0 || position > 3 {
+	if position < 0 || position > 2 {
 		return "", fmt.Errorf("invalid profile photo position")
 	}
 	if ext == "" || strings.Contains(ext, "/") || strings.Contains(ext, "\\") || strings.Contains(ext, "..") {

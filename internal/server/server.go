@@ -1553,7 +1553,7 @@ func timestamptz(value pgtype.Timestamptz) time.Time {
 
 func parsePhotoPosition(w http.ResponseWriter, r *http.Request) (int, bool) {
 	position, err := strconv.Atoi(chi.URLParam(r, "position"))
-	if err != nil || position < 0 || position > 3 {
+	if err != nil || position < 0 || position > 2 {
 		writeError(w, r, "invalid_profile_photo_position")
 		return 0, false
 	}
