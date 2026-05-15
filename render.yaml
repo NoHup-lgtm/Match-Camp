@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: matchcamp-api
+    runtime: docker
+    region: ohio
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: HTTP_ADDR
+        value: ":8080"
+      - key: SESSION_COOKIE_NAME
+        value: matchcamp_session
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: SESSION_COOKIE_SAME_SITE
+        value: none
+      - key: STORAGE_DRIVER
+        value: local
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
