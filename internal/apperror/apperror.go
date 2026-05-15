@@ -74,6 +74,13 @@ var definitions = map[string]Definition{
 	"invalid_uuid":                    {Code: "invalid_uuid", Message: "Identificador invalido.", Status: http.StatusBadRequest},
 	"internal_error":                  {Code: "internal_error", Message: "Erro interno.", Status: http.StatusInternalServerError},
 	"rate_limit_exceeded":             {Code: "rate_limit_exceeded", Message: "Muitas requisicoes. Tente novamente em instantes.", Status: http.StatusTooManyRequests},
+	"profile_fetch_failed":            {Code: "profile_fetch_failed", Message: "Falha ao carregar perfil.", Status: http.StatusInternalServerError},
+	"user_not_found":                  {Code: "user_not_found", Message: "Usuario nao encontrado.", Status: http.StatusNotFound},
+	"cannot_block_self":               {Code: "cannot_block_self", Message: "Voce nao pode bloquear a si mesmo.", Status: http.StatusBadRequest},
+	"block_failed":                    {Code: "block_failed", Message: "Falha ao bloquear usuario.", Status: http.StatusInternalServerError},
+	"unblock_failed":                  {Code: "unblock_failed", Message: "Falha ao desbloquear usuario.", Status: http.StatusInternalServerError},
+	"preferences_save_failed":         {Code: "preferences_save_failed", Message: "Falha ao salvar preferencias.", Status: http.StatusInternalServerError},
+	"invalid_preferences_payload":     {Code: "invalid_preferences_payload", Message: "Preferencias invalidas.", Status: http.StatusBadRequest},
 }
 
 func Lookup(code string) Definition {

@@ -15,7 +15,7 @@ import (
 const createMessage = `-- name: CreateMessage :one
 INSERT INTO messages (conversation_id, sender_user_id, body)
 VALUES ($1, $2, $3)
-RETURNING id, conversation_id, sender_user_id, body, created_at
+RETURNING id, conversation_id, sender_user_id, body, is_read, created_at
 `
 
 type CreateMessageParams struct {
@@ -24,14 +24,24 @@ type CreateMessageParams struct {
 	Body           string    `json:"body"`
 }
 
-func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
+type CreateMessageRow struct {
+	ID             uuid.UUID          `json:"id"`
+	ConversationID uuid.UUID          `json:"conversation_id"`
+	SenderUserID   uuid.UUID          `json:"sender_user_id"`
+	Body           string             `json:"body"`
+	IsRead         bool               `json:"is_read"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (CreateMessageRow, error) {
 	row := q.db.QueryRow(ctx, createMessage, arg.ConversationID, arg.SenderUserID, arg.Body)
-	var i Message
+	var i CreateMessageRow
 	err := row.Scan(
 		&i.ID,
 		&i.ConversationID,
 		&i.SenderUserID,
 		&i.Body,
+		&i.IsRead,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -82,34 +92,45 @@ func (q *Queries) ListConversationMembers(ctx context.Context, conversationID uu
 	return items, nil
 }
 
-const listMessages = `-- name: ListMessages :many
-SELECT id, sender_user_id, body, created_at
+const listMessagesPaginated = `-- name: ListMessagesPaginated :many
+SELECT id, conversation_id, sender_user_id, body, is_read, created_at
 FROM messages
 WHERE conversation_id = $1
-ORDER BY created_at ASC
-LIMIT 100
+  AND ($2::timestamptz IS NULL OR created_at < $2)
+ORDER BY created_at DESC
+LIMIT $3
 `
 
-type ListMessagesRow struct {
-	ID           uuid.UUID          `json:"id"`
-	SenderUserID uuid.UUID          `json:"sender_user_id"`
-	Body         string             `json:"body"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+type ListMessagesPaginatedParams struct {
+	ConversationID  uuid.UUID          `json:"conversation_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	LimitCount      int32              `json:"limit_count"`
 }
 
-func (q *Queries) ListMessages(ctx context.Context, conversationID uuid.UUID) ([]ListMessagesRow, error) {
-	rows, err := q.db.Query(ctx, listMessages, conversationID)
+type ListMessagesPaginatedRow struct {
+	ID             uuid.UUID          `json:"id"`
+	ConversationID uuid.UUID          `json:"conversation_id"`
+	SenderUserID   uuid.UUID          `json:"sender_user_id"`
+	Body           string             `json:"body"`
+	IsRead         bool               `json:"is_read"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListMessagesPaginated(ctx context.Context, arg ListMessagesPaginatedParams) ([]ListMessagesPaginatedRow, error) {
+	rows, err := q.db.Query(ctx, listMessagesPaginated, arg.ConversationID, arg.BeforeCreatedAt, arg.LimitCount)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListMessagesRow
+	var items []ListMessagesPaginatedRow
 	for rows.Next() {
-		var i ListMessagesRow
+		var i ListMessagesPaginatedRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.ConversationID,
 			&i.SenderUserID,
 			&i.Body,
+			&i.IsRead,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -120,4 +141,22 @@ func (q *Queries) ListMessages(ctx context.Context, conversationID uuid.UUID) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const markMessagesRead = `-- name: MarkMessagesRead :exec
+UPDATE messages
+SET is_read = true
+WHERE conversation_id = $1
+  AND sender_user_id <> $2
+  AND is_read = false
+`
+
+type MarkMessagesReadParams struct {
+	ConversationID uuid.UUID `json:"conversation_id"`
+	SenderUserID   uuid.UUID `json:"sender_user_id"`
+}
+
+func (q *Queries) MarkMessagesRead(ctx context.Context, arg MarkMessagesReadParams) error {
+	_, err := q.db.Exec(ctx, markMessagesRead, arg.ConversationID, arg.SenderUserID)
+	return err
 }

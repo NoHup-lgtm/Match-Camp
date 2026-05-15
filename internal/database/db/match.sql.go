@@ -64,21 +64,50 @@ func (q *Queries) HasReciprocalLike(ctx context.Context, arg HasReciprocalLikePa
 }
 
 const listConversationsForUser = `-- name: ListConversationsForUser :many
-SELECT c.id AS conversation_id, c.match_id, c.created_at
+SELECT
+    c.id                                                     AS conversation_id,
+    c.match_id,
+    c.created_at,
+    pu.id                                                                                         AS partner_id,
+    pu.display_name                                                                               AS partner_display_name,
+    pp.birth_date                                                                                 AS partner_birth_date,
+    COALESCE((SELECT url FROM profile_photos WHERE user_id = pu.id ORDER BY position ASC LIMIT 1), '')::text AS partner_photo_url,
+    COALESCE(msg.body, '')                                                                        AS last_message_body,
+    COALESCE(msg.sender_user_id, '00000000-0000-0000-0000-000000000000'::uuid)                   AS last_message_sender_id,
+    msg.created_at                                                                                AS last_message_at,
+    (SELECT COUNT(*)::int FROM messages m2
+     WHERE m2.conversation_id = c.id AND m2.sender_user_id <> $1 AND m2.is_read = false) AS unread_count
 FROM conversations c
-JOIN conversation_members cm ON cm.conversation_id = c.id
-WHERE cm.user_id = $1
-ORDER BY c.created_at DESC
+JOIN conversation_members cm  ON cm.conversation_id = c.id AND cm.user_id = $1
+JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id <> $1
+JOIN users pu ON pu.id = cm2.user_id
+LEFT JOIN profiles pp ON pp.user_id = pu.id
+LEFT JOIN LATERAL (
+    SELECT body, sender_user_id, created_at
+    FROM messages
+    WHERE conversation_id = c.id
+    ORDER BY created_at DESC
+    LIMIT 1
+) msg ON true
+ORDER BY COALESCE(msg.created_at, c.created_at) DESC
 `
 
 type ListConversationsForUserRow struct {
-	ConversationID uuid.UUID          `json:"conversation_id"`
-	MatchID        uuid.UUID          `json:"match_id"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ConversationID      uuid.UUID          `json:"conversation_id"`
+	MatchID             uuid.UUID          `json:"match_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	PartnerID           uuid.UUID          `json:"partner_id"`
+	PartnerDisplayName  string             `json:"partner_display_name"`
+	PartnerBirthDate    pgtype.Date        `json:"partner_birth_date"`
+	PartnerPhotoUrl     string             `json:"partner_photo_url"`
+	LastMessageBody     string             `json:"last_message_body"`
+	LastMessageSenderID uuid.UUID          `json:"last_message_sender_id"`
+	LastMessageAt       pgtype.Timestamptz `json:"last_message_at"`
+	UnreadCount         int32              `json:"unread_count"`
 }
 
-func (q *Queries) ListConversationsForUser(ctx context.Context, userID uuid.UUID) ([]ListConversationsForUserRow, error) {
-	rows, err := q.db.Query(ctx, listConversationsForUser, userID)
+func (q *Queries) ListConversationsForUser(ctx context.Context, senderUserID uuid.UUID) ([]ListConversationsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listConversationsForUser, senderUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +115,19 @@ func (q *Queries) ListConversationsForUser(ctx context.Context, userID uuid.UUID
 	var items []ListConversationsForUserRow
 	for rows.Next() {
 		var i ListConversationsForUserRow
-		if err := rows.Scan(&i.ConversationID, &i.MatchID, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.ConversationID,
+			&i.MatchID,
+			&i.CreatedAt,
+			&i.PartnerID,
+			&i.PartnerDisplayName,
+			&i.PartnerBirthDate,
+			&i.PartnerPhotoUrl,
+			&i.LastMessageBody,
+			&i.LastMessageSenderID,
+			&i.LastMessageAt,
+			&i.UnreadCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -98,17 +139,46 @@ func (q *Queries) ListConversationsForUser(ctx context.Context, userID uuid.UUID
 }
 
 const listMatchesForUser = `-- name: ListMatchesForUser :many
-SELECT m.id AS match_id, c.id AS conversation_id, m.created_at
+SELECT
+    m.id                                                     AS match_id,
+    c.id                                                     AS conversation_id,
+    m.created_at,
+    pu.id                                                                                         AS partner_id,
+    pu.display_name                                                                               AS partner_display_name,
+    pp.birth_date                                                                                 AS partner_birth_date,
+    COALESCE((SELECT url FROM profile_photos WHERE user_id = pu.id ORDER BY position ASC LIMIT 1), '')::text AS partner_photo_url,
+    COALESCE(msg.body, '')                                                                        AS last_message_body,
+    COALESCE(msg.sender_user_id, '00000000-0000-0000-0000-000000000000'::uuid)                   AS last_message_sender_id,
+    msg.created_at                                                                                AS last_message_at
 FROM matches m
 JOIN conversations c ON c.match_id = m.id
+JOIN users pu ON (
+    (m.user_low_id = $1 AND pu.id = m.user_high_id) OR
+    (m.user_high_id = $1 AND pu.id = m.user_low_id)
+)
+LEFT JOIN profiles pp ON pp.user_id = pu.id
+LEFT JOIN LATERAL (
+    SELECT body, sender_user_id, created_at
+    FROM messages
+    WHERE conversation_id = c.id
+    ORDER BY created_at DESC
+    LIMIT 1
+) msg ON true
 WHERE m.user_low_id = $1 OR m.user_high_id = $1
-ORDER BY m.created_at DESC
+ORDER BY COALESCE(msg.created_at, m.created_at) DESC
 `
 
 type ListMatchesForUserRow struct {
-	MatchID        uuid.UUID          `json:"match_id"`
-	ConversationID uuid.UUID          `json:"conversation_id"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	MatchID             uuid.UUID          `json:"match_id"`
+	ConversationID      uuid.UUID          `json:"conversation_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	PartnerID           uuid.UUID          `json:"partner_id"`
+	PartnerDisplayName  string             `json:"partner_display_name"`
+	PartnerBirthDate    pgtype.Date        `json:"partner_birth_date"`
+	PartnerPhotoUrl     string             `json:"partner_photo_url"`
+	LastMessageBody     string             `json:"last_message_body"`
+	LastMessageSenderID uuid.UUID          `json:"last_message_sender_id"`
+	LastMessageAt       pgtype.Timestamptz `json:"last_message_at"`
 }
 
 func (q *Queries) ListMatchesForUser(ctx context.Context, userLowID uuid.UUID) ([]ListMatchesForUserRow, error) {
@@ -120,7 +190,18 @@ func (q *Queries) ListMatchesForUser(ctx context.Context, userLowID uuid.UUID) (
 	var items []ListMatchesForUserRow
 	for rows.Next() {
 		var i ListMatchesForUserRow
-		if err := rows.Scan(&i.MatchID, &i.ConversationID, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.MatchID,
+			&i.ConversationID,
+			&i.CreatedAt,
+			&i.PartnerID,
+			&i.PartnerDisplayName,
+			&i.PartnerBirthDate,
+			&i.PartnerPhotoUrl,
+			&i.LastMessageBody,
+			&i.LastMessageSenderID,
+			&i.LastMessageAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

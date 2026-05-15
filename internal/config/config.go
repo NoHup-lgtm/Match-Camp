@@ -16,6 +16,7 @@ type Config struct {
 	LogLevel             slog.Level
 	SessionCookieName    string
 	SessionCookieSecure  bool
+	SessionCookieSameSite string // "lax" | "none"
 	AllowedEmailDomains  []string
 	AllowedOrigins       []string
 	GoogleClientID       string
@@ -40,8 +41,9 @@ func Load() Config {
 		RedisPassword:        env("REDIS_PASSWORD", ""),
 		RedisTLS:             envBool("REDIS_TLS", false),
 		LogLevel:             parseLogLevel(env("LOG_LEVEL", "info")),
-		SessionCookieName:    env("SESSION_COOKIE_NAME", "matchcamp_session"),
-		SessionCookieSecure:  envBool("SESSION_COOKIE_SECURE", false),
+		SessionCookieName:     env("SESSION_COOKIE_NAME", "matchcamp_session"),
+		SessionCookieSecure:   envBool("SESSION_COOKIE_SECURE", false),
+		SessionCookieSameSite: env("SESSION_COOKIE_SAME_SITE", "lax"),
 		AllowedEmailDomains:  splitCSV(env("ALLOWED_EMAIL_DOMAINS", "")),
 		AllowedOrigins:       splitCSV(env("ALLOWED_ORIGINS", "")),
 		GoogleClientID:       env("GOOGLE_CLIENT_ID", ""),

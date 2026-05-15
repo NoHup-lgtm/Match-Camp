@@ -14,3 +14,5 @@ sql:
             go_type:
               import: "github.com/google/uuid"
               type: "UUID"
+          - db_type: "pg_catalog.int4"
+            go_type: "int32"

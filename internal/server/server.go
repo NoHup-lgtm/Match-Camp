@@ -47,9 +47,10 @@ type Config struct {
 	Redis                *redis.Client
 	Storage              storage.ObjectStore
 	Log                  *slog.Logger
-	SessionCookieName    string
-	SessionCookieSecure  bool
-	AllowedEmailDomains  []string
+	SessionCookieName     string
+	SessionCookieSecure   bool
+	SessionCookieSameSite string
+	AllowedEmailDomains   []string
 	AllowedOrigins       []string
 	GoogleClientID       string
 	GoogleClientSecret   string
@@ -65,9 +66,10 @@ type Server struct {
 	redis                *redis.Client
 	storage              storage.ObjectStore
 	log                  *slog.Logger
-	sessionCookieName    string
-	sessionCookieSecure  bool
-	allowedDomains       map[string]struct{}
+	sessionCookieName     string
+	sessionCookieSecure   bool
+	sessionCookieSameSite http.SameSite
+	allowedDomains        map[string]struct{}
 	allowedOrigins       map[string]struct{}
 	googleClientID       string
 	googleClientSecret   string
@@ -108,9 +110,10 @@ func New(cfg Config) *Server {
 		redis:                cfg.Redis,
 		storage:              cfg.Storage,
 		log:                  cfg.Log,
-		sessionCookieName:    cfg.SessionCookieName,
-		sessionCookieSecure:  cfg.SessionCookieSecure,
-		allowedDomains:       domains,
+		sessionCookieName:     cfg.SessionCookieName,
+		sessionCookieSecure:   cfg.SessionCookieSecure,
+		sessionCookieSameSite: parseSameSite(cfg.SessionCookieSameSite),
+		allowedDomains:        domains,
 		allowedOrigins:       origins,
 		googleClientID:       cfg.GoogleClientID,
 		googleClientSecret:   cfg.GoogleClientSecret,
@@ -156,12 +159,16 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.me)
 			r.Put("/profile", s.upsertProfile)
 			r.Patch("/profile/visibility", s.updateVisibility)
+			r.Put("/profile/preferences", s.upsertPreferences)
 			r.Get("/profile/photos", s.listMyProfilePhotos)
 			r.Put("/profile/photos/{position}", s.uploadProfilePhoto)
 			r.Delete("/profile/photos/{position}", s.deleteProfilePhoto)
 			r.Get("/discovery", s.discovery)
 			r.Post("/swipes", s.swipe)
 			r.Get("/matches", s.matches)
+			r.Get("/users/{id}", s.publicProfile)
+			r.Post("/users/{id}/block", s.blockUser)
+			r.Delete("/users/{id}/block", s.unblockUser)
 			r.Get("/conversations", s.conversations)
 			r.Get("/conversations/{id}/messages", s.messages)
 			r.Post("/conversations/{id}/messages", s.createMessageHTTP)
@@ -283,11 +290,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser{ID: created.ID, Email: created.Email, Name: created.DisplayName}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, user)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 type loginRequest struct {
@@ -315,11 +328,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
@@ -338,7 +357,7 @@ func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   600,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
 	v := url.Values{}
@@ -381,7 +400,8 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, "google_user_save_failed")
 		return
 	}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
@@ -391,10 +411,15 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -408,14 +433,35 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, mustUser(r.Context()))
+	user := mustUser(r.Context())
+	row, err := s.queries.GetMyProfile(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, "profile_fetch_failed")
+		return
+	}
+	photos, err := s.queries.ListProfilePhotos(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, "profile_photos_list_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           row.ID,
+		"email":        row.Email,
+		"display_name": row.DisplayName,
+		"bio":          row.Bio,
+		"course":       row.Course,
+		"campus":       row.Campus,
+		"age":          calcAge(row.BirthDate),
+		"visible":      row.Visible,
+		"photos":       profilePhotoResponses(photos),
+	})
 }
 
 type profileRequest struct {
@@ -492,6 +538,37 @@ func (s *Server) updateVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"visible": req.Visible})
+}
+
+func (s *Server) upsertPreferences(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	var req struct {
+		InterestedIn string `json:"interested_in"`
+		MinAge       int32  `json:"min_age"`
+		MaxAge       int32  `json:"max_age"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	allowed := map[string]bool{"everyone": true, "men": true, "women": true}
+	if !allowed[req.InterestedIn] || req.MinAge < 18 || req.MaxAge > 99 || req.MinAge > req.MaxAge {
+		writeError(w, r, "invalid_preferences_payload")
+		return
+	}
+	if err := s.queries.UpsertPreferences(r.Context(), db.UpsertPreferencesParams{
+		UserID:       user.ID,
+		InterestedIn: req.InterestedIn,
+		MinAge:       req.MinAge,
+		MaxAge:       req.MaxAge,
+	}); err != nil {
+		writeError(w, r, "preferences_save_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interested_in": req.InterestedIn,
+		"min_age":       req.MinAge,
+		"max_age":       req.MaxAge,
+	})
 }
 
 func (s *Server) listMyProfilePhotos(w http.ResponseWriter, r *http.Request) {
@@ -597,9 +674,92 @@ func (s *Server) deleteProfilePhoto(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) publicProfile(w http.ResponseWriter, r *http.Request) {
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	profile, err := s.queries.GetPublicProfile(r.Context(), targetID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, r, "user_not_found")
+			return
+		}
+		writeError(w, r, "profile_fetch_failed")
+		return
+	}
+	photos, err := s.queries.ListProfilePhotos(r.Context(), targetID)
+	if err != nil {
+		writeError(w, r, "profile_photos_list_failed")
+		return
+	}
+	type photo struct {
+		ID       uuid.UUID `json:"id"`
+		URL      string    `json:"url"`
+		Position int32     `json:"position"`
+	}
+	photoList := make([]photo, 0, len(photos))
+	for _, ph := range photos {
+		photoList = append(photoList, photo{ID: ph.ID, URL: ph.Url, Position: ph.Position})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           profile.ID,
+		"display_name": profile.DisplayName,
+		"age":          calcAge(profile.BirthDate),
+		"bio":          profile.Bio,
+		"course":       profile.Course,
+		"campus":       profile.Campus,
+		"photos":       photoList,
+	})
+}
+
+func (s *Server) blockUser(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	if targetID == user.ID {
+		writeError(w, r, "cannot_block_self")
+		return
+	}
+	if err := s.queries.BlockUser(r.Context(), db.BlockUserParams{
+		BlockerID: user.ID,
+		BlockedID: targetID,
+	}); err != nil {
+		writeError(w, r, "block_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) unblockUser(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r.Context())
+	targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, r, "invalid_uuid")
+		return
+	}
+	if err := s.queries.UnblockUser(r.Context(), db.UnblockUserParams{
+		BlockerID: user.ID,
+		BlockedID: targetID,
+	}); err != nil {
+		writeError(w, r, "unblock_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	user := mustUser(r.Context())
-	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), user.ID)
+	limit, offset := parsePagination(r, 25, 100)
+	rows, err := s.queries.ListDiscoveryProfiles(r.Context(), db.ListDiscoveryProfilesParams{
+		UserID: user.ID,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		writeError(w, r, "discovery_failed")
 		return
@@ -614,6 +774,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{
 			"id":           row.ID,
 			"display_name": row.DisplayName,
+			"age":          calcAge(row.BirthDate),
 			"bio":          row.Bio,
 			"course":       row.Course,
 			"campus":       row.Campus,
@@ -667,10 +828,26 @@ func (s *Server) matches(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		partner := map[string]any{
+			"id":           row.PartnerID,
+			"display_name": row.PartnerDisplayName,
+			"age":          calcAge(row.PartnerBirthDate),
+			"photo_url":    nilIfEmpty(row.PartnerPhotoUrl),
+		}
+		var lastMsg any
+		if row.LastMessageAt.Valid {
+			lastMsg = map[string]any{
+				"text":       row.LastMessageBody,
+				"created_at": timestamptz(row.LastMessageAt),
+				"from_me":    row.LastMessageSenderID == user.ID,
+			}
+		}
 		out = append(out, map[string]any{
 			"match_id":        row.MatchID,
 			"conversation_id": row.ConversationID,
 			"created_at":      timestamptz(row.CreatedAt),
+			"partner":         partner,
+			"last_message":    lastMsg,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -685,10 +862,28 @@ func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		partner := map[string]any{
+			"id":           row.PartnerID,
+			"display_name": row.PartnerDisplayName,
+			"age":          calcAge(row.PartnerBirthDate),
+			"photo_url":    nilIfEmpty(row.PartnerPhotoUrl),
+			"online":       s.isOnline(r.Context(), row.PartnerID),
+		}
+		var lastMsg any
+		if row.LastMessageAt.Valid {
+			lastMsg = map[string]any{
+				"text":       row.LastMessageBody,
+				"created_at": timestamptz(row.LastMessageAt),
+				"from_me":    row.LastMessageSenderID == user.ID,
+			}
+		}
 		out = append(out, map[string]any{
 			"conversation_id": row.ConversationID,
 			"match_id":        row.MatchID,
 			"created_at":      timestamptz(row.CreatedAt),
+			"partner":         partner,
+			"last_message":    lastMsg,
+			"unread_count":    row.UnreadCount,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -704,18 +899,34 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, "not_conversation_member")
 		return
 	}
-	rows, err := s.queries.ListMessages(r.Context(), conversationID)
+	limit, beforeCreatedAt := parseMessagePagination(r)
+	rows, err := s.queries.ListMessagesPaginated(r.Context(), db.ListMessagesPaginatedParams{
+		ConversationID:  conversationID,
+		BeforeCreatedAt: beforeCreatedAt,
+		LimitCount:      int32(limit),
+	})
 	if err != nil {
 		writeError(w, r, "messages_failed")
 		return
 	}
+	// Marcar mensagens do parceiro como lidas.
+	_ = s.queries.MarkMessagesRead(r.Context(), db.MarkMessagesReadParams{
+		ConversationID: conversationID,
+		SenderUserID:   user.ID,
+	})
+	// Query retorna DESC; reverter para exibição cronológica.
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, map[string]any{
-			"id":             row.ID,
-			"sender_user_id": row.SenderUserID,
-			"body":           row.Body,
-			"created_at":     timestamptz(row.CreatedAt),
+			"id":              row.ID,
+			"conversation_id": row.ConversationID,
+			"sender_user_id":  row.SenderUserID,
+			"text":            row.Body,
+			"is_read":         row.IsRead,
+			"created_at":      timestamptz(row.CreatedAt),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -834,6 +1045,33 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+
+		// Typing indicator: {"type":"typing","conversation_id":"uuid"}
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &peek) == nil && peek.Type == "typing" {
+			var typingReq struct {
+				ConversationID uuid.UUID `json:"conversation_id"`
+			}
+			if json.Unmarshal(data, &typingReq) == nil && typingReq.ConversationID != uuid.Nil {
+				if s.isConversationMember(ctx, typingReq.ConversationID, user.ID) {
+					members, _ := s.conversationMembers(ctx, typingReq.ConversationID)
+					event, _ := json.Marshal(map[string]any{
+						"type":            "typing",
+						"conversation_id": typingReq.ConversationID,
+						"user_id":         user.ID,
+					})
+					for _, m := range members {
+						if m != user.ID {
+							_ = s.redis.Publish(ctx, "user:"+m.String(), event).Err()
+						}
+					}
+				}
+			}
+			continue
+		}
+
 		req, err := parseChatPayloadBytes(data)
 		if err != nil {
 			_ = wsWriteJSON(map[string]string{"error": err.Error()})
@@ -862,6 +1100,7 @@ type chatMessageResponse struct {
 	ConversationID uuid.UUID `json:"conversation_id"`
 	SenderUserID   uuid.UUID `json:"sender_user_id"`
 	Text           string    `json:"text"`
+	IsRead         bool      `json:"is_read"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -891,13 +1130,22 @@ func (s *Server) createMessage(ctx context.Context, sender uuid.UUID, req chatMe
 		ConversationID: row.ConversationID,
 		SenderUserID:   row.SenderUserID,
 		Text:           row.Body,
+		IsRead:         row.IsRead,
 		CreatedAt:      timestamptz(row.CreatedAt),
 	}
-	payload, _ := json.Marshal(msg)
+	event, _ := json.Marshal(map[string]any{
+		"type":            "message",
+		"id":              msg.ID,
+		"conversation_id": msg.ConversationID,
+		"sender_user_id":  msg.SenderUserID,
+		"text":            msg.Text,
+		"is_read":         msg.IsRead,
+		"created_at":      msg.CreatedAt,
+	})
 	recipients, err := s.conversationMembers(ctx, req.ConversationID)
 	if err == nil {
 		for _, recipient := range recipients {
-			_ = s.redis.Publish(ctx, "user:"+recipient.String(), payload).Err()
+			_ = s.redis.Publish(ctx, "user:"+recipient.String(), event).Err()
 		}
 	}
 	return msg, nil
@@ -977,17 +1225,35 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, uuid.Nil, false, err
 	}
+	// Notificar ambos os usuários do novo match via WebSocket com dados do parceiro.
+	actorProfile, _ := s.queries.GetPublicProfile(ctx, actor)
+	targetProfile, _ := s.queries.GetPublicProfile(ctx, target)
+	for _, pair := range []struct {
+		recipient uuid.UUID
+		partner   any
+	}{
+		{actor, map[string]any{"id": targetProfile.ID, "display_name": targetProfile.DisplayName, "photo_url": nilIfEmpty(targetProfile.PhotoUrl)}},
+		{target, map[string]any{"id": actorProfile.ID, "display_name": actorProfile.DisplayName, "photo_url": nilIfEmpty(actorProfile.PhotoUrl)}},
+	} {
+		ev, _ := json.Marshal(map[string]any{
+			"type":            "match",
+			"match_id":        matchID,
+			"conversation_id": conversationID,
+			"partner":         pair.partner,
+		})
+		_ = s.redis.Publish(ctx, "user:"+pair.recipient.String(), ev).Err()
+	}
 	return matchID, conversationID, true, nil
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(s.sessionCookieName)
-		if err != nil || cookie.Value == "" {
+		token := s.extractSessionToken(r)
+		if token == "" {
 			writeError(w, r, "missing_session")
 			return
 		}
-		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(cookie.Value))
+		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(token))
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, r, "invalid_session")
 			return
@@ -1001,10 +1267,23 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID) error {
+// extractSessionToken aceita cookie HttpOnly (web) ou Authorization: Bearer <token> (mobile).
+func (s *Server) extractSessionToken(r *http.Request) string {
+	if cookie, err := r.Cookie(s.sessionCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
+		return strings.TrimPrefix(bearer, "Bearer ")
+	}
+	return ""
+}
+
+// createSession persiste a sessão, define o cookie e retorna o token raw
+// para ser incluído na resposta (útil para clientes mobile que não usam cookies).
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID) (string, error) {
 	token, hash, err := auth.NewSessionToken()
 	if err != nil {
-		return err
+		return "", err
 	}
 	expiresAt := time.Now().Add(sessionTTL)
 	if err := s.queries.CreateSession(r.Context(), db.CreateSessionParams{
@@ -1012,7 +1291,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uu
 		TokenHash: hash,
 		ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	}); err != nil {
-		return err
+		return "", err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.sessionCookieName,
@@ -1020,10 +1299,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uu
 		Path:     "/",
 		Expires:  expiresAt,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
-	return nil
+	return token, nil
 }
 
 type googleProfile struct {
@@ -1308,4 +1587,68 @@ func normalizePair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func calcAge(birthDate pgtype.Date) *int {
+	if !birthDate.Valid {
+		return nil
+	}
+	now := time.Now()
+	years := now.Year() - birthDate.Time.Year()
+	birthday := time.Date(now.Year(), birthDate.Time.Month(), birthDate.Time.Day(), 0, 0, 0, 0, time.Local)
+	if now.Before(birthday) {
+		years--
+	}
+	return &years
+}
+
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func (s *Server) isOnline(ctx context.Context, userID uuid.UUID) bool {
+	val, err := s.redis.Get(ctx, "presence:"+userID.String()).Result()
+	return err == nil && val == "online"
+}
+
+func parsePagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {
+	limit := defaultLimit
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= maxLimit {
+			limit = n
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
+
+func parseSameSite(s string) http.SameSite {
+	if strings.ToLower(s) == "none" {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
+}
+
+func parseMessagePagination(r *http.Request) (int, pgtype.Timestamptz) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	var before pgtype.Timestamptz
+	if t := r.URL.Query().Get("before"); t != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, t); err == nil {
+			before = pgtype.Timestamptz{Time: parsed, Valid: true}
+		}
+	}
+	return limit, before
 }

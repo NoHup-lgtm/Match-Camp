@@ -12,11 +12,19 @@ WHERE conversation_id = $1;
 -- name: CreateMessage :one
 INSERT INTO messages (conversation_id, sender_user_id, body)
 VALUES ($1, $2, $3)
-RETURNING id, conversation_id, sender_user_id, body, created_at;
+RETURNING id, conversation_id, sender_user_id, body, is_read, created_at;
 
--- name: ListMessages :many
-SELECT id, sender_user_id, body, created_at
+-- name: ListMessagesPaginated :many
+SELECT id, conversation_id, sender_user_id, body, is_read, created_at
 FROM messages
 WHERE conversation_id = $1
-ORDER BY created_at ASC
-LIMIT 100;
+  AND (sqlc.narg('before_created_at')::timestamptz IS NULL OR created_at < sqlc.narg('before_created_at'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit_count');
+
+-- name: MarkMessagesRead :exec
+UPDATE messages
+SET is_read = true
+WHERE conversation_id = $1
+  AND sender_user_id <> $2
+  AND is_read = false;
