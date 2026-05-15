@@ -1,444 +1,1099 @@
 {
   "info": {
-    "name": "Matchcamp Backend MVP",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    "name": "Matchcamp API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Collection completa do backend Matchcamp. Execute em ordem para criar usuários, gerar match e testar chat."
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8080" },
-    { "key": "run_id", "value": "{{$timestamp}}" },
-    { "key": "alice_email", "value": "alice+{{$timestamp}}@faculdade.local" },
-    { "key": "bruno_email", "value": "bruno+{{$timestamp}}@faculdade.local" },
-    { "key": "password", "value": "senha1234" },
-    { "key": "alice_id", "value": "" },
-    { "key": "bruno_id", "value": "" },
-    { "key": "match_id", "value": "" },
-    { "key": "conversation_id", "value": "" }
+    { "key": "base_url",         "value": "http://localhost:8080" },
+    { "key": "password",         "value": "senha1234" },
+    { "key": "alice_email",      "value": "alice_test@faculdade.local" },
+    { "key": "alice_id",         "value": "" },
+    { "key": "bruno_email",      "value": "bruno_test@faculdade.local" },
+    { "key": "bruno_id",         "value": "" },
+    { "key": "match_id",         "value": "" },
+    { "key": "conversation_id",  "value": "" },
+    { "key": "message_id",       "value": "" }
   ],
   "item": [
     {
-      "name": "00 Health",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/health"
-      },
-      "event": [
+      "name": "Infra",
+      "item": [
         {
-          "listen": "test",
-          "script": { "exec": ["pm.test('health ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "00.0 OpenAPI YAML",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/openapi.yaml"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('openapi yaml ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "00.0 Swagger UI",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/docs"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('swagger ui ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "00.1 Google OAuth Start - Not Configured",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/auth/google/start"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('google oauth currently not configured', () => pm.response.to.have.status(503));"] }
-        }
-      ]
-    },
-    {
-      "name": "00.2 Google OAuth Callback - Missing State",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/auth/google/callback"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('callback without state is rejected', () => pm.response.to.have.status(400));"] }
-        }
-      ]
-    },
-    {
-      "name": "01 Register Alice",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"display_name\": \"Alice {{run_id}}\",\n  \"password\": \"{{password}}\"\n}"
-        },
-        "url": "{{base_url}}/v1/auth/register"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('alice registered', () => pm.response.to.have.status(201));",
-              "const json = pm.response.json();",
-              "pm.collectionVariables.set('alice_id', json.id);"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "02 Alice Me",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/me"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice session ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "03 Alice Upsert Profile",
-      "request": {
-        "method": "PUT",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"bio\": \"curto backend\",\n  \"course\": \"Computacao\",\n  \"campus\": \"Principal\",\n  \"birth_date\": \"2000-01-01\"\n}"
-        },
-        "url": "{{base_url}}/v1/profile"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice profile saved', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "04 Alice Visible",
-      "request": {
-        "method": "PATCH",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
-        "url": "{{base_url}}/v1/profile/visibility"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice visible', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "04.1 Alice Upload Profile Photo 0",
-      "request": {
-        "method": "PUT",
-        "body": {
-          "mode": "formdata",
-          "formdata": [
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health"
+          },
+          "event": [
             {
-              "key": "photo",
-              "type": "file",
-              "src": []
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('db e redis ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
             }
           ]
         },
-        "url": "{{base_url}}/v1/profile/photos/0"
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice photo uploaded', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "04.2 Alice List Profile Photos",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/profile/photos"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice photos listed', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "04.3 Reject Profile Photo Position 4",
-      "request": {
-        "method": "PUT",
-        "body": {
-          "mode": "formdata",
-          "formdata": [
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/docs"
+          },
+          "event": [
             {
-              "key": "photo",
-              "type": "file",
-              "src": []
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
             }
           ]
         },
-        "url": "{{base_url}}/v1/profile/photos/4"
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": { "exec": ["pm.test('position 4 is rejected', () => pm.response.to.have.status(400));"] }
+          "name": "OpenAPI YAML",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/openapi.yaml"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "05 Register Bruno",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"display_name\": \"Bruno {{run_id}}\",\n  \"password\": \"{{password}}\"\n}"
-        },
-        "url": "{{base_url}}/v1/auth/register"
-      },
-      "event": [
+      "name": "Auth",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('bruno registered', () => pm.response.to.have.status(201));",
-              "const json = pm.response.json();",
-              "pm.collectionVariables.set('bruno_id', json.id);"
-            ]
+          "name": "Register Alice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"display_name\": \"Alice Teste\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/register"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('retorna id', () => pm.expect(j).to.have.property('id'));",
+                  "pm.collectionVariables.set('alice_id', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register — email já cadastrado",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"display_name\": \"Alice Duplicada\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/register"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 409 conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code email_already_registered', () => pm.expect(pm.response.json().error.code).to.eql('email_already_registered'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Alice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cookie de sessão presente', () => pm.expect(pm.cookies.has('matchcamp_session')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login — credenciais erradas",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"senhaerrada\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code invalid_credentials', () => pm.expect(pm.response.json().error.code).to.eql('invalid_credentials'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Google OAuth Start — não configurado",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/auth/google/start"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 503', () => pm.response.to.have.status(503));"] }
+            }
+          ]
+        },
+        {
+          "name": "Google OAuth Callback — sem state",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/auth/google/callback"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 400', () => pm.response.to.have.status(400));"] }
+            }
+          ]
+        },
+        {
+          "name": "Logout Alice",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/v1/auth/logout"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 204', () => pm.response.to.have.status(204));"] }
+            }
+          ]
+        },
+        {
+          "name": "Rota protegida sem sessão",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code missing_session', () => pm.expect(pm.response.json().error.code).to.eql('missing_session'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Perfil — Alice",
+      "item": [
+        {
+          "name": "Login Alice (para perfil)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "GET /me",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('tem id, email, display_name', () => {",
+                  "  pm.expect(j).to.have.property('id');",
+                  "  pm.expect(j).to.have.property('email');",
+                  "  pm.expect(j).to.have.property('display_name');",
+                  "});",
+                  "pm.test('tem bio, course, campus, visible, photos', () => {",
+                  "  pm.expect(j).to.have.property('bio');",
+                  "  pm.expect(j).to.have.property('course');",
+                  "  pm.expect(j).to.have.property('campus');",
+                  "  pm.expect(j).to.have.property('visible');",
+                  "  pm.expect(j.photos).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /profile",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"Curto backend e café\",\n  \"course\": \"Ciência da Computação\",\n  \"campus\": \"Campus Norte\",\n  \"birth_date\": \"2000-06-15\"\n}"
+            },
+            "url": "{{base_url}}/v1/profile"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /profile/visibility — ativar",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
+            "url": "{{base_url}}/v1/profile/visibility"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('visible true', () => pm.expect(pm.response.json().visible).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /profile/visibility — desativar",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"visible\": false\n}" },
+            "url": "{{base_url}}/v1/profile/visibility"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('visible false', () => pm.expect(pm.response.json().visible).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /profile/photos",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/profile/photos"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('retorna array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /profile/photos/0 — upload foto (selecionar arquivo)",
+          "request": {
+            "method": "PUT",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "photo", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{base_url}}/v1/profile/photos/0"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Selecione um arquivo .jpg ou .png antes de rodar.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /profile/photos/4 — posição inválida",
+          "request": {
+            "method": "PUT",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "photo", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{base_url}}/v1/profile/photos/4"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code invalid_profile_photo_position', () => pm.expect(pm.response.json().error.code).to.eql('invalid_profile_photo_position'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /profile/photos/0",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/v1/profile/photos/0"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 204', () => pm.response.to.have.status(204));"] }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Discovery & Match",
+      "item": [
+        {
+          "name": "Register Bruno",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"display_name\": \"Bruno Teste\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/register"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('bruno_id', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bruno — salvar perfil e ficar visível",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"Gosto de banco de dados\",\n  \"course\": \"Sistemas de Informação\",\n  \"campus\": \"Campus Sul\",\n  \"birth_date\": \"2001-03-20\"\n}"
+            },
+            "url": "{{base_url}}/v1/profile"
+          },
+          "event": [
+            {
+              "listen": "pre-request",
+              "script": {
+                "exec": [
+                  "// Faz login como Bruno antes de salvar o perfil",
+                  "pm.sendRequest({",
+                  "  url: pm.collectionVariables.get('base_url') + '/v1/auth/login',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ email: pm.collectionVariables.get('bruno_email'), password: pm.collectionVariables.get('password') }) }",
+                  "}, function(err, res) {});",
+                  "// Obs: o cookie de sessão é setado automaticamente pelo Postman."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "Login Bruno",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "Bruno — perfil + visibilidade",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
+            "url": "{{base_url}}/v1/profile/visibility"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "Login Alice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "Alice — ativar visibilidade",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
+            "url": "{{base_url}}/v1/profile/visibility"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "GET /discovery",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/discovery?limit=10&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "discovery"],
+              "query": [
+                { "key": "limit",  "value": "10" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const profiles = pm.response.json();",
+                  "pm.test('retorna array', () => pm.expect(profiles).to.be.an('array'));",
+                  "if (profiles.length > 0) {",
+                  "  pm.test('perfil tem age', () => pm.expect(profiles[0]).to.have.property('age'));",
+                  "  pm.test('perfil tem photos', () => pm.expect(profiles[0].photos).to.be.an('array'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Alice likes Bruno",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_user_id\": \"{{bruno_id}}\",\n  \"action\": \"like\"\n}"
+            },
+            "url": "{{base_url}}/v1/swipes"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('sem match ainda', () => pm.expect(pm.response.json().matched).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Alice likes Bruno — swipe duplicado",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_user_id\": \"{{bruno_id}}\",\n  \"action\": \"like\"\n}"
+            },
+            "url": "{{base_url}}/v1/swipes"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 409 conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code swipe_already_exists', () => pm.expect(pm.response.json().error.code).to.eql('swipe_already_exists'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Alice — swipe com action inválida",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_user_id\": \"{{bruno_id}}\",\n  \"action\": \"superlike\"\n}"
+            },
+            "url": "{{base_url}}/v1/swipes"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code invalid_swipe', () => pm.expect(pm.response.json().error.code).to.eql('invalid_swipe'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Bruno",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "Bruno likes Alice — gera match",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_user_id\": \"{{alice_id}}\",\n  \"action\": \"like\"\n}"
+            },
+            "url": "{{base_url}}/v1/swipes"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('matched true', () => pm.expect(j.matched).to.be.true);",
+                  "pm.test('retorna match_id e conversation_id', () => {",
+                  "  pm.expect(j).to.have.property('match_id');",
+                  "  pm.expect(j).to.have.property('conversation_id');",
+                  "});",
+                  "pm.collectionVariables.set('match_id', j.match_id);",
+                  "pm.collectionVariables.set('conversation_id', j.conversation_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /matches — Bruno",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/matches"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const matches = pm.response.json();",
+                  "pm.test('retorna array com ao menos 1 match', () => pm.expect(matches.length).to.be.greaterThan(0));",
+                  "const m = matches[0];",
+                  "pm.test('match tem partner com age e photo_url', () => {",
+                  "  pm.expect(m.partner).to.have.property('id');",
+                  "  pm.expect(m.partner).to.have.property('display_name');",
+                  "  pm.expect(m.partner).to.have.property('age');",
+                  "  pm.expect(m.partner).to.have.property('photo_url');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /users/{id} — perfil público da Alice",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/users/{{alice_id}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('tem display_name, age, bio, course, campus, photos', () => {",
+                  "  pm.expect(j).to.have.property('display_name');",
+                  "  pm.expect(j).to.have.property('age');",
+                  "  pm.expect(j).to.have.property('bio');",
+                  "  pm.expect(j).to.have.property('course');",
+                  "  pm.expect(j).to.have.property('campus');",
+                  "  pm.expect(j.photos).to.be.an('array');",
+                  "});",
+                  "pm.test('não expõe email', () => pm.expect(j).to.not.have.property('email'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /users/{id} — usuário inexistente",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/users/00000000-0000-0000-0000-000000000001"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code user_not_found', () => pm.expect(pm.response.json().error.code).to.eql('user_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /users/{id} — UUID inválido",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/users/nao-e-uuid"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code invalid_uuid', () => pm.expect(pm.response.json().error.code).to.eql('invalid_uuid'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Conversas & Chat",
+      "item": [
+        {
+          "name": "GET /conversations — Bruno",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/conversations"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const convs = pm.response.json();",
+                  "pm.test('retorna array', () => pm.expect(convs).to.be.an('array'));",
+                  "if (convs.length > 0) {",
+                  "  const c = convs[0];",
+                  "  pm.test('conversa tem partner com online e unread_count', () => {",
+                  "    pm.expect(c.partner).to.have.property('online');",
+                  "    pm.expect(c).to.have.property('unread_count');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /conversations/{id}/messages — Bruno envia",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"Oi Alice, tudo bem?\"\n}"
+            },
+            "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('mensagem tem conversation_id, text, is_read', () => {",
+                  "  pm.expect(j).to.have.property('conversation_id');",
+                  "  pm.expect(j).to.have.property('text');",
+                  "  pm.expect(j).to.have.property('is_read');",
+                  "});",
+                  "pm.collectionVariables.set('message_id', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST — body com attachment (rejeitado)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"olha essa foto\",\n  \"image\": \"base64data\"\n}"
+            },
+            "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code chat_payload_text_only', () => pm.expect(pm.response.json().error.code).to.eql('chat_payload_text_only'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST — mensagem com link (rejeitado)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"acessa https://meulink.com\"\n}"
+            },
+            "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code links_and_media_are_not_allowed', () => pm.expect(pm.response.json().error.code).to.eql('links_and_media_are_not_allowed'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Alice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "GET /conversations/{id}/messages — Alice lê (marca como lido)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/conversations/{{conversation_id}}/messages?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "conversations", "{{conversation_id}}", "messages"],
+              "query": [{ "key": "limit", "value": "20" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const msgs = pm.response.json();",
+                  "pm.test('retorna array de mensagens', () => pm.expect(msgs).to.be.an('array'));",
+                  "if (msgs.length > 0) {",
+                  "  pm.test('mensagem tem conversation_id, text, sender_user_id, is_read', () => {",
+                  "    pm.expect(msgs[0]).to.have.property('conversation_id');",
+                  "    pm.expect(msgs[0]).to.have.property('text');",
+                  "    pm.expect(msgs[0]).to.have.property('sender_user_id');",
+                  "    pm.expect(msgs[0]).to.have.property('is_read');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /conversations/{id}/messages — paginação com before",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/conversations/{{conversation_id}}/messages?limit=10&before=2099-01-01T00:00:00Z",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "conversations", "{{conversation_id}}", "messages"],
+              "query": [
+                { "key": "limit",  "value": "10" },
+                { "key": "before", "value": "2099-01-01T00:00:00Z" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "GET /conversations — Alice (unread_count deve ser 0 após leitura)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/conversations"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const convs = pm.response.json();",
+                  "if (convs.length > 0) {",
+                  "  pm.test('unread_count zerado após leitura', () => pm.expect(convs[0].unread_count).to.eql(0));",
+                  "  pm.test('last_message preenchido', () => pm.expect(convs[0].last_message).to.not.be.null);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /matches — Alice",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/matches"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const matches = pm.response.json();",
+                  "if (matches.length > 0) {",
+                  "  pm.test('last_message preenchido', () => pm.expect(matches[0].last_message).to.not.be.null);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Acesso a conversa de outro usuário (rejeitado)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/conversations/00000000-0000-0000-0000-000000000001/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('code not_conversation_member', () => pm.expect(pm.response.json().error.code).to.eql('not_conversation_member'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WebSocket",
+      "item": [
+        {
+          "name": "WS /ws — conectar (manual)",
+          "request": {
+            "method": "GET",
+            "url": "ws://localhost:8080/v1/ws",
+            "description": "Conecte com uma sessão válida. No Postman, use a aba WebSocket Request.\n\nEnvie:\n{\"conversation_id\":\"{{conversation_id}}\",\"text\":\"mensagem pelo WS\"}\n\nEspere receber:\n{\"type\":\"message\",\"conversation_id\":\"...\",\"text\":\"...\",\"sender_user_id\":\"...\",\"is_read\":false,...}\n\nQuando outro usuário der match com você, receberá:\n{\"type\":\"match\",\"match_id\":\"...\",\"conversation_id\":\"...\",\"partner\":{\"id\":\"...\",\"display_name\":\"...\",\"photo_url\":\"...\"}}"
           }
         }
       ]
     },
     {
-      "name": "06 Bruno Upsert Profile",
-      "request": {
-        "method": "PUT",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"bio\": \"curto banco\",\n  \"course\": \"Computacao\",\n  \"campus\": \"Principal\",\n  \"birth_date\": \"2001-01-01\"\n}"
+      "name": "Seed Users (referência)",
+      "item": [
+        {
+          "name": "Login Ana (seed)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ana@uni.br\",\n  \"password\": \"senha1234\"\n}"
+            },
+            "url": "{{base_url}}/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
         },
-        "url": "{{base_url}}/v1/profile"
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": { "exec": ["pm.test('bruno profile saved', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "07 Bruno Visible",
-      "request": {
-        "method": "PATCH",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": { "mode": "raw", "raw": "{\n  \"visible\": true\n}" },
-        "url": "{{base_url}}/v1/profile/visibility"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('bruno visible', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "08 Login Alice",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{alice_email}}\",\n  \"password\": \"{{password}}\"\n}"
+          "name": "Discovery com seed users",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/discovery?limit=5",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "discovery"],
+              "query": [{ "key": "limit", "value": "5" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const profiles = pm.response.json();",
+                  "pm.test('seed users visíveis', () => pm.expect(profiles.length).to.be.greaterThan(0));",
+                  "pm.test('perfis têm age calculada', () => profiles.forEach(p => pm.expect(p.age).to.be.a('number')));"
+                ]
+              }
+            }
+          ]
         },
-        "url": "{{base_url}}/v1/auth/login"
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": { "exec": ["pm.test('alice logged in', () => pm.response.to.have.status(200));"] }
+          "name": "GET /me — Ana (age, bio, photos)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/v1/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('age calculada', () => pm.expect(j.age).to.be.a('number'));",
+                  "pm.test('visible true', () => pm.expect(j.visible).to.be.true);",
+                  "pm.test('tem foto', () => pm.expect(j.photos.length).to.be.greaterThan(0));"
+                ]
+              }
+            }
+          ]
         }
       ]
-    },
-    {
-      "name": "09 Alice Discovery",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/discovery"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('discovery ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "10 Alice Likes Bruno",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"target_user_id\": \"{{bruno_id}}\",\n  \"action\": \"like\"\n}"
-        },
-        "url": "{{base_url}}/v1/swipes"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('first like does not match yet', () => pm.response.json().matched === false);"] }
-        }
-      ]
-    },
-    {
-      "name": "11 Login Bruno",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{bruno_email}}\",\n  \"password\": \"{{password}}\"\n}"
-        },
-        "url": "{{base_url}}/v1/auth/login"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('bruno logged in', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "12 Bruno Likes Alice",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"target_user_id\": \"{{alice_id}}\",\n  \"action\": \"like\"\n}"
-        },
-        "url": "{{base_url}}/v1/swipes"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('reciprocal like creates match', () => pm.response.json().matched === true);",
-              "const json = pm.response.json();",
-              "pm.collectionVariables.set('match_id', json.match_id);",
-              "pm.collectionVariables.set('conversation_id', json.conversation_id);"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "13 Bruno Conversations",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/conversations"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('conversations ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "14 Bruno Sends Text Message",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"oi, texto puro\"\n}"
-        },
-        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('message created', () => pm.response.to.have.status(201));"] }
-        }
-      ]
-    },
-    {
-      "name": "15 Bruno Lists Messages",
-      "request": {
-        "method": "GET",
-        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('messages ok', () => pm.response.to.have.status(200));"] }
-        }
-      ]
-    },
-    {
-      "name": "16 Reject Attachment Field",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"text\": \"foto\",\n  \"image\": \"base64\"\n}"
-        },
-        "url": "{{base_url}}/v1/conversations/{{conversation_id}}/messages"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('attachment rejected', () => pm.response.to.have.status(400));"] }
-        }
-      ]
-    },
-    {
-      "name": "17 Logout",
-      "request": {
-        "method": "POST",
-        "url": "{{base_url}}/v1/auth/logout"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": { "exec": ["pm.test('logout ok', () => pm.response.to.have.status(204));"] }
-        }
-      ]
-    },
-    {
-      "name": "WebSocket Chat",
-      "request": {
-        "method": "GET",
-        "url": "ws://localhost:8080/v1/ws"
-      }
     }
   ]
 }
