@@ -1,27 +1,49 @@
 openapi: 3.0.3
 info:
   title: Matchcamp API
-  version: 0.2.0
-  description: API REST e WebSocket do Matchcamp.
+  version: 0.4.0
+  description: |
+    API REST + WebSocket do Matchcamp.
+
+    **Autenticação:** cookie HttpOnly `matchcamp_session` definido pelo login.
+    Todas as rotas sob `/v1` (exceto `/auth/register`, `/auth/login`, `/auth/google/*`) exigem sessão ativa.
+
+    **Rate limits:**
+    - Register: 5 req/min por IP
+    - Login: 10 req/min por IP
+    - Swipes: 60 req/min por usuário
+    - Mensagens: 30 req/min por usuário
+
 servers:
   - url: http://localhost:8080
+    description: Desenvolvimento local
+
 security:
   - cookieAuth: []
+
 tags:
   - name: Health
+    description: Status da infraestrutura
   - name: Auth
+    description: Registro, login, logout e OAuth
   - name: Profile
+    description: Perfil do usuário autenticado e fotos
   - name: Discovery
+    description: Explorar perfis e dar swipe
   - name: Match
+    description: Matches e perfil público de outros usuários
   - name: Chat
+    description: Conversas, mensagens e WebSocket em tempo real
+
 paths:
   /health:
     get:
       tags: [Health]
+      summary: Verifica saúde do banco e Redis
       security: []
       responses:
         "200":
-          description: Servicos saudaveis.
+          description: Todos os serviços saudáveis.
           content:
             application/json:
               schema:
@@ -32,9 +54,11 @@ paths:
                     example: ok
         "503":
           $ref: "#/components/responses/Error"
+
   /v1/auth/register:
     post:
       tags: [Auth]
+      summary: Cadastrar novo usuário com email e senha
       security: []
       requestBody:
         required: true
@@ -42,20 +66,34 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/RegisterRequest"
+            example:
+              email: joao@faculdade.edu.br
+              display_name: João Silva
+              password: minha_senha_secreta
       responses:
         "201":
-          description: Usuario cadastrado.
+          description: Usuário cadastrado. Define cookie de sessão.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: matchcamp_session=abc123; Path=/; HttpOnly; SameSite=Lax
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/AuthUser"
         "400":
           $ref: "#/components/responses/Error"
         "409":
+          description: Email já cadastrado.
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+
   /v1/auth/login:
     post:
       tags: [Auth]
+      summary: Login com email e senha
       security: []
       requestBody:
         required: true
@@ -65,7 +103,7 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          description: Login realizado. Define cookie HttpOnly de sessao.
+          description: Login realizado. Define cookie HttpOnly de sessão.
           headers:
             Set-Cookie:
               schema:
@@ -73,21 +111,38 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/AuthUser"
         "401":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Encerrar sessão
+      responses:
+        "204":
+          description: Sessão encerrada. Cookie removido.
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/auth/google/start:
     get:
       tags: [Auth]
+      summary: Iniciar fluxo OAuth com Google
       security: []
       responses:
         "302":
-          description: Redireciona para Google OAuth.
+          description: Redireciona para página de login do Google.
         "503":
+          description: Google OAuth não configurado.
           $ref: "#/components/responses/Error"
+
   /v1/auth/google/callback:
     get:
       tags: [Auth]
+      summary: Callback OAuth do Google
       security: []
       parameters:
         - in: query
@@ -100,38 +155,47 @@ paths:
             type: string
       responses:
         "200":
-          description: Usuario autenticado pelo Google.
+          description: Usuário autenticado pelo Google. Define cookie de sessão.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/AuthUser"
         "400":
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
-  /v1/auth/logout:
-    post:
-      tags: [Auth]
-      responses:
-        "204":
-          description: Sessao encerrada.
-        "401":
-          $ref: "#/components/responses/Error"
+
   /v1/me:
     get:
-      tags: [Auth]
+      tags: [Profile]
+      summary: Retorna perfil completo do usuário autenticado
       responses:
         "200":
-          description: Usuario autenticado.
+          description: Perfil completo incluindo bio, fotos e idade calculada.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/MyProfile"
+              example:
+                id: 6efc4c3c-f216-4921-a1ee-e8a7d248c13e
+                email: ana@uni.br
+                display_name: Ana Silva
+                bio: Adoro filmes e café
+                course: Ciência da Computação
+                campus: Campus Norte
+                age: 24
+                visible: true
+                photos:
+                  - id: abc123
+                    url: https://storage.matchcamp.app/fotos/ana.jpg
+                    position: 0
         "401":
           $ref: "#/components/responses/Error"
+
   /v1/profile:
     put:
       tags: [Profile]
+      summary: Criar ou atualizar perfil
       requestBody:
         required: true
         content:
@@ -151,9 +215,14 @@ paths:
                     example: saved
         "400":
           $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/profile/visibility:
     patch:
       tags: [Profile]
+      summary: Ativar ou desativar visibilidade no discovery
+      description: Requer que `course` e `campus` estejam preenchidos.
       requestBody:
         required: true
         content:
@@ -175,22 +244,31 @@ paths:
                   visible:
                     type: boolean
         "400":
+          description: Perfil incompleto (course/campus ausentes).
           $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/profile/photos:
     get:
       tags: [Profile]
+      summary: Listar fotos do perfil autenticado
       responses:
         "200":
-          description: Fotos do perfil autenticado.
+          description: Lista de fotos ordenadas por posição.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/ProfilePhoto"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/profile/photos/{position}:
     put:
       tags: [Profile]
+      summary: Fazer upload de foto na posição 0–3
       parameters:
         - $ref: "#/components/parameters/ProfilePhotoPosition"
       requestBody:
@@ -204,41 +282,71 @@ paths:
                 photo:
                   type: string
                   format: binary
+                  description: Arquivo JPG ou PNG, máximo 5 MB.
       responses:
         "200":
-          description: Foto salva ou substituida.
+          description: Foto salva ou substituída.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProfilePhoto"
         "400":
           $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
         "413":
+          description: Arquivo excede 5 MB.
           $ref: "#/components/responses/Error"
     delete:
       tags: [Profile]
+      summary: Remover foto na posição 0–3
       parameters:
         - $ref: "#/components/parameters/ProfilePhotoPosition"
       responses:
         "204":
           description: Foto removida.
+        "401":
+          $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+
   /v1/discovery:
     get:
       tags: [Discovery]
+      summary: Listar perfis visíveis ainda não avaliados
+      description: Retorna perfis de outros usuários que o autenticado ainda não swipou. Ordenados por atualização recente.
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+          description: Número máximo de perfis por página.
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Offset para paginação.
       responses:
         "200":
-          description: Perfis visiveis ainda nao avaliados.
+          description: Lista de perfis para swipe.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/DiscoveryProfile"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/swipes:
     post:
-      tags: [Match]
+      tags: [Discovery]
+      summary: Registrar like ou pass em um perfil
       requestBody:
         required: true
         content:
@@ -247,57 +355,122 @@ paths:
               $ref: "#/components/schemas/SwipeRequest"
       responses:
         "201":
-          description: Swipe registrado.
+          description: |
+            Swipe registrado. Se ambos deram `like`, `matched` será `true`
+            e `match_id`/`conversation_id` serão preenchidos.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SwipeResponse"
         "400":
           $ref: "#/components/responses/Error"
-        "409":
+        "401":
           $ref: "#/components/responses/Error"
+        "409":
+          description: Swipe já registrado para esse usuário.
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+
   /v1/matches:
     get:
       tags: [Match]
+      summary: Listar todos os matches com dados do parceiro
       responses:
         "200":
-          description: Matches do usuario.
+          description: Matches ordenados pela mensagem mais recente.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Match"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/users/{id}:
+    get:
+      tags: [Match]
+      summary: Perfil público de outro usuário
+      description: Usado para exibir o perfil completo de um match (bio, fotos, idade). Não expõe email.
+      parameters:
+        - $ref: "#/components/parameters/UUIDPathID"
+      responses:
+        "200":
+          description: Perfil público do usuário.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicProfile"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
   /v1/conversations:
     get:
       tags: [Chat]
+      summary: Listar conversas com preview de última mensagem e status online
       responses:
         "200":
-          description: Conversas do usuario.
+          description: Conversas ordenadas pela mensagem mais recente.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Conversation"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/conversations/{id}/messages:
     get:
       tags: [Chat]
+      summary: Listar mensagens de uma conversa (paginação por cursor)
+      description: |
+        Retorna mensagens em ordem cronológica (mais antigas primeiro).
+        Use `before` para paginar para o passado.
+        Marca automaticamente como lidas as mensagens do parceiro.
       parameters:
         - $ref: "#/components/parameters/UUIDPathID"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Número máximo de mensagens.
+        - in: query
+          name: before
+          schema:
+            type: string
+            format: date-time
+          description: Retorna mensagens criadas antes deste timestamp (RFC3339). Use `created_at` da mensagem mais antiga da página atual para carregar mais.
+          example: "2026-05-14T20:00:00Z"
       responses:
         "200":
-          description: Mensagens da conversa.
+          description: Mensagens em ordem cronológica.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Message"
+        "401":
+          $ref: "#/components/responses/Error"
         "403":
+          description: Usuário não é membro desta conversa.
           $ref: "#/components/responses/Error"
     post:
       tags: [Chat]
+      summary: Enviar mensagem via HTTP
+      description: |
+        Alternativa ao WebSocket para envio de mensagem.
+        Links, URLs e campos extras são rejeitados.
+        Também publica o evento no canal WebSocket do destinatário.
       parameters:
         - $ref: "#/components/parameters/UUIDPathID"
       requestBody:
@@ -308,31 +481,77 @@ paths:
               $ref: "#/components/schemas/CreateMessageRequest"
       responses:
         "201":
-          description: Mensagem criada.
+          description: Mensagem criada e publicada no WebSocket.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageCreated"
+                $ref: "#/components/schemas/Message"
         "400":
+          $ref: "#/components/responses/Error"
+        "401":
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+
   /v1/ws:
     get:
       tags: [Chat]
-      summary: WebSocket autenticado para chat em tempo real.
-      description: "Upgrade WebSocket. Envie JSON com conversation_id e text. Campos extras, links e midia sao rejeitados."
+      summary: Conexão WebSocket para chat em tempo real
+      description: |
+        Faz upgrade para WebSocket. Requer cookie de sessão válido.
+
+        **Presença:** a conexão mantém o usuário como "online" no Redis (TTL 45s, renovado a cada 20s).
+
+        **Enviar mensagem:**
+        ```json
+        { "conversation_id": "uuid", "text": "olá!" }
+        ```
+
+        **Eventos recebidos:**
+
+        Nova mensagem:
+        ```json
+        {
+          "type": "message",
+          "id": "uuid",
+          "conversation_id": "uuid",
+          "sender_user_id": "uuid",
+          "text": "olá!",
+          "is_read": false,
+          "created_at": "2026-05-14T23:00:00Z"
+        }
+        ```
+
+        Novo match:
+        ```json
+        {
+          "type": "match",
+          "match_id": "uuid",
+          "conversation_id": "uuid",
+          "partner": {
+            "id": "uuid",
+            "display_name": "Bruna Costa",
+            "photo_url": "https://..."
+          }
+        }
+        ```
+
+        **Keepalive:** servidor envia ping a cada 30s; cliente deve responder com pong em até 60s.
       responses:
         "101":
-          description: Conexao WebSocket estabelecida.
+          description: Conexão WebSocket estabelecida.
         "401":
           $ref: "#/components/responses/Error"
+
 components:
   securitySchemes:
     cookieAuth:
       type: apiKey
       in: cookie
       name: matchcamp_session
+
   parameters:
     UUIDPathID:
       in: path
@@ -349,6 +568,8 @@ components:
         type: integer
         minimum: 0
         maximum: 3
+      description: Posição da foto (0 = principal, até 3).
+
   responses:
     Error:
       description: Erro padronizado.
@@ -356,6 +577,7 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+
   schemas:
     ErrorEnvelope:
       type: object
@@ -374,7 +596,8 @@ components:
             request_id:
               type: string
               example: 4bdfb6c2d46d/BtJz9SRWbG-000001
-    User:
+
+    AuthUser:
       type: object
       required: [id, email, display_name]
       properties:
@@ -386,27 +609,63 @@ components:
           format: email
         display_name:
           type: string
-    RegisterRequest:
+
+    MyProfile:
       type: object
-      required: [email, display_name, password]
+      required: [id, email, display_name, bio, course, campus, visible, photos]
       properties:
+        id:
+          type: string
+          format: uuid
         email:
           type: string
           format: email
         display_name:
           type: string
-        password:
+        bio:
           type: string
-          minLength: 8
-    LoginRequest:
+          maxLength: 500
+        course:
+          type: string
+        campus:
+          type: string
+        age:
+          type: integer
+          nullable: true
+          description: Calculado a partir de birth_date. Null se não preenchido.
+          example: 24
+        visible:
+          type: boolean
+        photos:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfilePhoto"
+
+    PublicProfile:
       type: object
-      required: [email, password]
+      required: [id, display_name, bio, course, campus, photos]
+      description: Perfil público de outro usuário. Não expõe email.
       properties:
-        email:
+        id:
           type: string
-          format: email
-        password:
+          format: uuid
+        display_name:
           type: string
+        bio:
+          type: string
+        course:
+          type: string
+        campus:
+          type: string
+        age:
+          type: integer
+          nullable: true
+          example: 25
+        photos:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfilePhoto"
+
     ProfileRequest:
       type: object
       properties:
@@ -422,14 +681,13 @@ components:
         birth_date:
           type: string
           format: date
+          example: "2001-06-15"
+
     ProfilePhoto:
       type: object
-      required: [id, user_id, url, position, created_at]
+      required: [id, url, position]
       properties:
         id:
-          type: string
-          format: uuid
-        user_id:
           type: string
           format: uuid
         url:
@@ -442,14 +700,20 @@ components:
         created_at:
           type: string
           format: date-time
+
     DiscoveryProfile:
       type: object
+      required: [id, display_name, photos]
       properties:
         id:
           type: string
           format: uuid
         display_name:
           type: string
+        age:
+          type: integer
+          nullable: true
+          example: 22
         bio:
           type: string
         course:
@@ -460,6 +724,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ProfilePhoto"
+
     SwipeRequest:
       type: object
       required: [target_user_id, action]
@@ -470,19 +735,57 @@ components:
         action:
           type: string
           enum: [like, pass]
+
     SwipeResponse:
       type: object
+      required: [matched]
       properties:
         matched:
           type: boolean
         match_id:
           type: string
           format: uuid
+          nullable: true
+          description: Presente apenas quando matched=true.
         conversation_id:
           type: string
           format: uuid
+          nullable: true
+          description: Presente apenas quando matched=true.
+
+    MatchPartner:
+      type: object
+      required: [id, display_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        age:
+          type: integer
+          nullable: true
+        photo_url:
+          type: string
+          format: uri
+          nullable: true
+
+    LastMessage:
+      type: object
+      nullable: true
+      properties:
+        text:
+          type: string
+        from_me:
+          type: boolean
+          description: True se a última mensagem foi enviada pelo usuário autenticado.
+        created_at:
+          type: string
+          format: date-time
+
     Match:
       type: object
+      required: [match_id, conversation_id, created_at, partner]
       properties:
         match_id:
           type: string
@@ -493,8 +796,23 @@ components:
         created_at:
           type: string
           format: date-time
+        partner:
+          $ref: "#/components/schemas/MatchPartner"
+        last_message:
+          $ref: "#/components/schemas/LastMessage"
+
+    ConversationPartner:
+      allOf:
+        - $ref: "#/components/schemas/MatchPartner"
+        - type: object
+          properties:
+            online:
+              type: boolean
+              description: True se o parceiro tem conexão WebSocket ativa (TTL 45s).
+
     Conversation:
       type: object
+      required: [conversation_id, match_id, created_at, partner, unread_count]
       properties:
         conversation_id:
           type: string
@@ -505,10 +823,41 @@ components:
         created_at:
           type: string
           format: date-time
+        partner:
+          $ref: "#/components/schemas/ConversationPartner"
+        last_message:
+          $ref: "#/components/schemas/LastMessage"
+        unread_count:
+          type: integer
+          description: Número de mensagens não lidas do parceiro.
+          example: 3
+
+    Message:
+      type: object
+      required: [id, conversation_id, sender_user_id, text, is_read, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_user_id:
+          type: string
+          format: uuid
+        text:
+          type: string
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
     CreateMessageRequest:
       type: object
       required: [conversation_id, text]
       additionalProperties: false
+      description: Apenas texto puro. Links, URLs e campos extras são rejeitados.
       properties:
         conversation_id:
           type: string
@@ -517,34 +866,3 @@ components:
           type: string
           minLength: 1
           maxLength: 1000
-    Message:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        sender_user_id:
-          type: string
-          format: uuid
-        body:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-    MessageCreated:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        conversation_id:
-          type: string
-          format: uuid
-        sender_user_id:
-          type: string
-          format: uuid
-        text:
-          type: string
-        created_at:
-          type: string
-          format: date-time

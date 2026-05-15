@@ -13,6 +13,7 @@ RUN adduser -D -H matchcamp
 WORKDIR /app
 RUN mkdir -p /app/uploads/profile-photos && chown -R matchcamp:matchcamp /app
 COPY --from=build /out/matchcamp /app/matchcamp
+COPY --from=build /src/docs /app/docs
 USER matchcamp
 
 EXPOSE 8080
