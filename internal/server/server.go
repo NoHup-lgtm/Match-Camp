@@ -47,9 +47,10 @@ type Config struct {
 	Redis                *redis.Client
 	Storage              storage.ObjectStore
 	Log                  *slog.Logger
-	SessionCookieName    string
-	SessionCookieSecure  bool
-	AllowedEmailDomains  []string
+	SessionCookieName     string
+	SessionCookieSecure   bool
+	SessionCookieSameSite string
+	AllowedEmailDomains   []string
 	AllowedOrigins       []string
 	GoogleClientID       string
 	GoogleClientSecret   string
@@ -65,9 +66,10 @@ type Server struct {
 	redis                *redis.Client
 	storage              storage.ObjectStore
 	log                  *slog.Logger
-	sessionCookieName    string
-	sessionCookieSecure  bool
-	allowedDomains       map[string]struct{}
+	sessionCookieName     string
+	sessionCookieSecure   bool
+	sessionCookieSameSite http.SameSite
+	allowedDomains        map[string]struct{}
 	allowedOrigins       map[string]struct{}
 	googleClientID       string
 	googleClientSecret   string
@@ -108,9 +110,10 @@ func New(cfg Config) *Server {
 		redis:                cfg.Redis,
 		storage:              cfg.Storage,
 		log:                  cfg.Log,
-		sessionCookieName:    cfg.SessionCookieName,
-		sessionCookieSecure:  cfg.SessionCookieSecure,
-		allowedDomains:       domains,
+		sessionCookieName:     cfg.SessionCookieName,
+		sessionCookieSecure:   cfg.SessionCookieSecure,
+		sessionCookieSameSite: parseSameSite(cfg.SessionCookieSameSite),
+		allowedDomains:        domains,
 		allowedOrigins:       origins,
 		googleClientID:       cfg.GoogleClientID,
 		googleClientSecret:   cfg.GoogleClientSecret,
@@ -287,11 +290,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser{ID: created.ID, Email: created.Email, Name: created.DisplayName}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, user)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 type loginRequest struct {
@@ -319,11 +328,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser{ID: row.ID, Email: row.Email, Name: row.DisplayName}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +357,7 @@ func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   600,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
 	v := url.Values{}
@@ -385,7 +400,8 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, "google_user_save_failed")
 		return
 	}
-	if err := s.createSession(w, r, user.ID); err != nil {
+	token, err := s.createSession(w, r, user.ID)
+	if err != nil {
 		writeError(w, r, "session_create_failed")
 		return
 	}
@@ -395,10 +411,15 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            user.ID,
+		"email":         user.Email,
+		"display_name":  user.Name,
+		"session_token": token,
+	})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +433,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
 	w.WriteHeader(http.StatusNoContent)
@@ -1227,12 +1248,12 @@ func (s *Server) recordSwipe(ctx context.Context, actor, target uuid.UUID, actio
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(s.sessionCookieName)
-		if err != nil || cookie.Value == "" {
+		token := s.extractSessionToken(r)
+		if token == "" {
 			writeError(w, r, "missing_session")
 			return
 		}
-		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(cookie.Value))
+		row, err := s.queries.GetUserBySessionTokenHash(r.Context(), auth.HashToken(token))
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, r, "invalid_session")
 			return
@@ -1246,10 +1267,23 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID) error {
+// extractSessionToken aceita cookie HttpOnly (web) ou Authorization: Bearer <token> (mobile).
+func (s *Server) extractSessionToken(r *http.Request) string {
+	if cookie, err := r.Cookie(s.sessionCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
+		return strings.TrimPrefix(bearer, "Bearer ")
+	}
+	return ""
+}
+
+// createSession persiste a sessão, define o cookie e retorna o token raw
+// para ser incluído na resposta (útil para clientes mobile que não usam cookies).
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID) (string, error) {
 	token, hash, err := auth.NewSessionToken()
 	if err != nil {
-		return err
+		return "", err
 	}
 	expiresAt := time.Now().Add(sessionTTL)
 	if err := s.queries.CreateSession(r.Context(), db.CreateSessionParams{
@@ -1257,7 +1291,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uu
 		TokenHash: hash,
 		ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	}); err != nil {
-		return err
+		return "", err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.sessionCookieName,
@@ -1265,10 +1299,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID uu
 		Path:     "/",
 		Expires:  expiresAt,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: s.sessionCookieSameSite,
 		Secure:   s.sessionCookieSecure,
 	})
-	return nil
+	return token, nil
 }
 
 type googleProfile struct {
@@ -1594,6 +1628,13 @@ func parsePagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {
 		}
 	}
 	return limit, offset
+}
+
+func parseSameSite(s string) http.SameSite {
+	if strings.ToLower(s) == "none" {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
 }
 
 func parseMessagePagination(r *http.Request) (int, pgtype.Timestamptz) {

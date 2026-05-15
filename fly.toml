@@ -20,6 +20,7 @@ primary_region = "gru"
   memory = "256mb"
 
 [env]
-  HTTP_ADDR              = ":8080"
-  SESSION_COOKIE_SECURE  = "true"
-  STORAGE_DRIVER         = "r2"
+  HTTP_ADDR                 = ":8080"
+  SESSION_COOKIE_SECURE     = "true"
+  SESSION_COOKIE_SAME_SITE  = "none"
+  STORAGE_DRIVER            = "r2"
